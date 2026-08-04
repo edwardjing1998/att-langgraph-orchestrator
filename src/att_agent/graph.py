@@ -9,6 +9,7 @@ from att_agent.clients.snowflake import SnowflakeCortexClient
 from att_agent.config import Settings
 from att_agent.models import AgentState, Evidence, Intent
 from att_agent.routing import classify_intents
+from att_agent.ai_routing import DatabricksAIRouter
 
 
 class AgentGraph:
@@ -17,10 +18,12 @@ class AgentGraph:
         settings: Settings,
         databricks: DatabricksClient,
         snowflake: SnowflakeCortexClient,
+        ai_router: DatabricksAIRouter,
     ) -> None:
         self._settings = settings
         self._databricks = databricks
         self._snowflake = snowflake
+        self._ai_router = ai_router
 
         builder = StateGraph(AgentState)
         builder.add_node("classify", self._classify)
@@ -32,8 +35,17 @@ class AgentGraph:
         builder.add_edge("synthesize", END)
         self.compiled = builder.compile()
 
-    async def _classify(self, state: AgentState) -> dict[str, object]:
-        return {"intents": classify_intents(state["question"])}
+    async def _classify(
+            self,
+            state: AgentState,
+    ) -> dict[str, object]:
+        decision = await self._ai_router.classify(
+            state["question"]
+        )
+
+        return {
+            "intents": decision.intents,
+        }
 
     async def _retrieve(self, state: AgentState) -> dict[str, object]:
         intents = state["intents"]
@@ -110,7 +122,11 @@ class AgentGraph:
         return {"answer": _extractive_fallback(evidence)}
 
     async def close(self) -> None:
-        await asyncio.gather(self._databricks.close(), self._snowflake.close())
+        await asyncio.gather(
+            self._databricks.close(),
+            self._snowflake.close(),
+            self._ai_router.close(),
+        )
 
 
 def build_graph(settings: Settings) -> AgentGraph:
@@ -120,6 +136,7 @@ def build_graph(settings: Settings) -> AgentGraph:
         chat_endpoint=settings.databricks_chat_endpoint,
         timeout_seconds=settings.request_timeout_seconds,
     )
+
     snowflake = SnowflakeCortexClient(
         host=settings.snowflake_host,
         pat=settings.snowflake_pat,
@@ -128,7 +145,20 @@ def build_graph(settings: Settings) -> AgentGraph:
         service=settings.snowflake_cortex_service,
         timeout_seconds=settings.request_timeout_seconds,
     )
-    return AgentGraph(settings, databricks, snowflake)
+
+    ai_router = DatabricksAIRouter(
+        host=settings.databricks_host,
+        token=settings.databricks_token,
+        endpoint=settings.databricks_chat_endpoint,
+        timeout_seconds=settings.request_timeout_seconds,
+    )
+
+    return AgentGraph(
+        settings=settings,
+        databricks=databricks,
+        snowflake=snowflake,
+        ai_router=ai_router,
+    )
 
 
 def _extractive_fallback(evidence: list[Evidence]) -> str:
