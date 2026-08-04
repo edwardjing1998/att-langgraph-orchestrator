@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: att-langgraph-orchestrator
+spec:
+  selector:
+    app: att-langgraph-orchestrator
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+

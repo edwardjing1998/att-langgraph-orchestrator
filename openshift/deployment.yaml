@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: att-langgraph-orchestrator
+  labels:
+    app: att-langgraph-orchestrator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: att-langgraph-orchestrator
+  template:
+    metadata:
+      labels:
+        app: att-langgraph-orchestrator
+    spec:
+      containers:
+        - name: app
+          image: image-registry.openshift-image-registry.svc:5000/${OPENSHIFT_NAMESPACE}/att-langgraph-orchestrator:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: att-langgraph-orchestrator-config
+            - secretRef:
+                name: att-langgraph-orchestrator-secrets
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 3
+
