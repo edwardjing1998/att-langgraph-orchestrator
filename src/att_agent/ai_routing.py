@@ -2,7 +2,7 @@ import json
 import logging
 
 import httpx
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 from att_agent.models import Intent
 from att_agent.routing import classify_intents
@@ -24,8 +24,10 @@ class DatabricksAIRouter:
         token: str,
         endpoint: str,
         timeout_seconds: float,
+        enabled: bool,
     ) -> None:
         self._endpoint = endpoint
+        self._enabled = enabled
 
         self._client = httpx.AsyncClient(
             base_url=host.rstrip("/"),
@@ -44,40 +46,25 @@ class DatabricksAIRouter:
         self,
         question: str,
     ) -> RoutingDecision:
+        if not self._enabled:
+            return _fallback_decision(question)
+
         try:
             payload = await self._call_model(question)
-            decision = _parse_decision(payload)
-
-            if not decision.intents:
-                raise ValueError(
-                    "The AI router returned no intents"
-                )
-
-            return decision
+            return _parse_decision(payload)
 
         except (
             httpx.HTTPError,
             ValueError,
             KeyError,
             TypeError,
-            json.JSONDecodeError,
-            ValidationError,
         ) as exception:
             LOGGER.warning(
                 "AI routing failed; using deterministic fallback: %s",
                 type(exception).__name__,
             )
 
-            fallback_intents = classify_intents(question)
-
-            return RoutingDecision(
-                intents=fallback_intents,
-                needs_billing_account_token=(
-                    "billing_transaction"
-                    in fallback_intents
-                ),
-                reason="Deterministic routing fallback",
-            )
+            return _fallback_decision(question)
 
     async def _call_model(
         self,
@@ -86,38 +73,22 @@ class DatabricksAIRouter:
         system_prompt = """
 You route telecom questions to approved retrieval tools.
 
-Available intents:
+Allowed intents:
 
-1. policy
-Use for:
-- policy rules
-- refund or reversal eligibility
-- disputes
-- what is allowed
-- product or service policies
+- policy:
+  Policy rules, eligibility, refunds, reversals, and disputes.
 
-2. billing_knowledge
-Use for:
-- general billing explanations
-- fees
-- taxes
-- proration
-- roaming-charge explanations
-- meanings of charge types
+- billing_knowledge:
+  General explanations of fees, taxes, proration, roaming,
+  and charge types.
 
-3. billing_transaction
-Use for:
-- the user's bill
-- customer-specific charge amounts
-- transactions
-- credits
-- adjustments
-- billing-cycle records
-- posted charge status
+- billing_transaction:
+  Customer-specific bills, amounts, transactions, credits,
+  adjustments, billing cycles, and posting status.
 
-A question may require multiple intents.
+A question can require multiple intents.
 
-Return only valid JSON in this exact form:
+Return only JSON with this shape:
 
 {
   "intents": [
@@ -126,17 +97,14 @@ Return only valid JSON in this exact form:
     "billing_transaction"
   ],
   "needs_billing_account_token": true,
-  "reason": "Short non-sensitive explanation"
+  "reason": "Short, non-sensitive explanation"
 }
 
-Rules:
-- Select only the listed intents.
-- Do not generate URLs.
-- Do not request credentials.
-- Do not include hidden reasoning.
-- Never infer customer identity.
-- billing_transaction requires a billing-account token.
-- General policy and knowledge questions do not require customer data.
+Use only the allowed intent names.
+
+Do not generate URLs, credentials, SQL, or hidden reasoning.
+Never infer customer identity.
+Customer-specific transaction retrieval requires a billing-account token.
 """.strip()
 
         response = await self._client.post(
@@ -172,10 +140,18 @@ def _parse_decision(
     cleaned_text = _remove_code_fence(generated_text)
     decoded = json.loads(cleaned_text)
 
-    # Remove duplicates while preserving order.
-    decoded["intents"] = list(
-        dict.fromkeys(decoded.get("intents", []))
-    )
+    if not isinstance(decoded, dict):
+        raise ValueError(
+            "The routing model response must be a JSON object"
+        )
+
+    intents = decoded.get("intents", [])
+
+    if isinstance(intents, list):
+        # Remove duplicate intents while preserving order.
+        decoded["intents"] = list(
+            dict.fromkeys(intents)
+        )
 
     return RoutingDecision.model_validate(decoded)
 
@@ -191,16 +167,14 @@ def _extract_generated_text(
         if isinstance(first, dict):
             message = first.get("message")
 
-            if isinstance(message, dict):
-                content = message.get("content")
+            if (
+                isinstance(message, dict)
+                and message.get("content")
+            ):
+                return str(message["content"])
 
-                if content:
-                    return str(content)
-
-            text = first.get("text")
-
-            if text:
-                return str(text)
+            if first.get("text"):
+                return str(first["text"])
 
     predictions = payload.get("predictions")
 
@@ -213,10 +187,8 @@ def _extract_generated_text(
                 "text",
                 "generated_text",
             ):
-                value = first.get(key)
-
-                if value:
-                    return str(value)
+                if first.get(key):
+                    return str(first[key])
 
         return str(first)
 
@@ -225,18 +197,31 @@ def _extract_generated_text(
     )
 
 
-def _remove_code_fence(value: str) -> str:
+def _remove_code_fence(
+    value: str,
+) -> str:
     stripped = value.strip()
 
-    if stripped.startswith("```"):
-        lines = stripped.splitlines()
+    if not stripped.startswith("```"):
+        return stripped
 
-        if lines:
-            lines = lines[1:]
+    lines = stripped.splitlines()[1:]
 
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
 
-        stripped = "\n".join(lines).strip()
+    return "\n".join(lines).strip()
 
-    return stripped
+
+def _fallback_decision(
+    question: str,
+) -> RoutingDecision:
+    intents = classify_intents(question)
+
+    return RoutingDecision(
+        intents=intents,
+        needs_billing_account_token=(
+            "billing_transaction" in intents
+        ),
+        reason="Deterministic routing fallback",
+    )
