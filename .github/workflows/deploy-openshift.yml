@@ -3,7 +3,8 @@ name: Deploy LangGraph Orchestrator to OpenShift
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
       - "src/**"
       - "tests/**"
@@ -18,23 +19,29 @@ permissions:
 
 jobs:
   test-and-deploy:
+    name: Test and deploy
     runs-on: ubuntu-latest
     environment: staging
+
     env:
       OPENSHIFT_SERVER: ${{ secrets.OPENSHIFT_SERVER }}
       OPENSHIFT_TOKEN: ${{ secrets.OPENSHIFT_TOKEN }}
       OPENSHIFT_NAMESPACE: ${{ secrets.OPENSHIFT_NAMESPACE }}
+
       DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
       SNOWFLAKE_PAT: ${{ secrets.SNOWFLAKE_PAT }}
       APP_API_KEY: ${{ secrets.APP_API_KEY }}
+
       DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
       DATABRICKS_POLICY_INDEX: ${{ vars.DATABRICKS_POLICY_INDEX }}
       DATABRICKS_BILLING_INDEX: ${{ vars.DATABRICKS_BILLING_INDEX }}
       DATABRICKS_CHAT_ENDPOINT: ${{ vars.DATABRICKS_CHAT_ENDPOINT }}
+
       SNOWFLAKE_HOST: ${{ vars.SNOWFLAKE_HOST }}
       SNOWFLAKE_CORTEX_DATABASE: ${{ vars.SNOWFLAKE_CORTEX_DATABASE }}
       SNOWFLAKE_CORTEX_SCHEMA: ${{ vars.SNOWFLAKE_CORTEX_SCHEMA }}
       SNOWFLAKE_CORTEX_SERVICE: ${{ vars.SNOWFLAKE_CORTEX_SERVICE }}
+
       LLM_ENABLED: ${{ vars.LLM_ENABLED }}
 
     steps:
@@ -48,8 +55,15 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-dev.txt
 
+      - name: Display Python version
+        run: |
+          python --version
+          pip --version
+
       - name: Install dependencies
-        run: python -m pip install -r requirements-dev.txt
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
 
       - name: Lint
         run: ruff check src tests
@@ -57,71 +71,272 @@ jobs:
       - name: Test
         run: pytest -q
 
+      # Install the OpenShift CLI directly from the official Red Hat mirror.
+      # This replaces redhat-actions/oc-installer, which failed because it
+      # generated an invalid download URL for version "4.18".
       - name: Install OpenShift CLI
-        uses: redhat-actions/oc-installer@v1
-        with:
-          oc_version: "4.18"
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OC_DOWNLOAD_DIR="$RUNNER_TEMP/openshift-client"
+          OC_INSTALL_DIR="$HOME/.local/bin"
+          OC_ARCHIVE="$OC_DOWNLOAD_DIR/openshift-client-linux.tar.gz"
+          OC_DOWNLOAD_URL="https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest-4.18/openshift-client-linux.tar.gz"
+
+          mkdir -p "$OC_DOWNLOAD_DIR"
+          mkdir -p "$OC_INSTALL_DIR"
+
+          echo "Downloading OpenShift CLI from:"
+          echo "$OC_DOWNLOAD_URL"
+
+          curl \
+            --fail \
+            --location \
+            --retry 5 \
+            --retry-delay 5 \
+            --connect-timeout 30 \
+            --output "$OC_ARCHIVE" \
+            "$OC_DOWNLOAD_URL"
+
+          tar \
+            --extract \
+            --gzip \
+            --file "$OC_ARCHIVE" \
+            --directory "$OC_DOWNLOAD_DIR"
+
+          test -f "$OC_DOWNLOAD_DIR/oc" || {
+            echo "The downloaded archive does not contain the oc executable"
+            exit 1
+          }
+
+          install \
+            --mode=0755 \
+            "$OC_DOWNLOAD_DIR/oc" \
+            "$OC_INSTALL_DIR/oc"
+
+          echo "$OC_INSTALL_DIR" >> "$GITHUB_PATH"
+
+          "$OC_INSTALL_DIR/oc" version --client
 
       - name: Validate deployment configuration
         shell: bash
         run: |
-          required=(
-            OPENSHIFT_SERVER OPENSHIFT_TOKEN OPENSHIFT_NAMESPACE
-            DATABRICKS_TOKEN SNOWFLAKE_PAT DATABRICKS_HOST
-            DATABRICKS_POLICY_INDEX DATABRICKS_BILLING_INDEX
-            SNOWFLAKE_HOST SNOWFLAKE_CORTEX_DATABASE
-            SNOWFLAKE_CORTEX_SCHEMA SNOWFLAKE_CORTEX_SERVICE
+          set -euo pipefail
+
+          required_variables=(
+            OPENSHIFT_SERVER
+            OPENSHIFT_TOKEN
+            OPENSHIFT_NAMESPACE
+            DATABRICKS_TOKEN
+            SNOWFLAKE_PAT
+            DATABRICKS_HOST
+            DATABRICKS_POLICY_INDEX
+            DATABRICKS_BILLING_INDEX
+            SNOWFLAKE_HOST
+            SNOWFLAKE_CORTEX_DATABASE
+            SNOWFLAKE_CORTEX_SCHEMA
+            SNOWFLAKE_CORTEX_SERVICE
           )
-          for name in "${required[@]}"; do
-            test -n "${!name}" || { echo "Missing $name"; exit 1; }
+
+          for variable_name in "${required_variables[@]}"; do
+            if [ -z "${!variable_name:-}" ]; then
+              echo "Missing required GitHub secret or variable: $variable_name"
+              exit 1
+            fi
           done
+
+          echo "::add-mask::$OPENSHIFT_TOKEN"
           echo "::add-mask::$DATABRICKS_TOKEN"
           echo "::add-mask::$SNOWFLAKE_PAT"
-          if [ -n "$APP_API_KEY" ]; then echo "::add-mask::$APP_API_KEY"; fi
-          if [ -z "$LLM_ENABLED" ]; then echo "LLM_ENABLED=false" >> "$GITHUB_ENV"; fi
+
+          if [ -n "${APP_API_KEY:-}" ]; then
+            echo "::add-mask::$APP_API_KEY"
+            echo "APP_API_KEY is configured."
+          else
+            echo "APP_API_KEY is not configured."
+            echo "The /api/v1/ask endpoint will not require X-API-Key."
+          fi
+
+          if [ -z "${LLM_ENABLED:-}" ]; then
+            echo "LLM_ENABLED=false" >> "$GITHUB_ENV"
+            echo "LLM_ENABLED was not configured; using false."
+          fi
+
+          echo "Deployment configuration validation completed."
 
       - name: Log in to OpenShift
+        shell: bash
         run: |
+          set -euo pipefail
+
           oc login "$OPENSHIFT_SERVER" \
             --token="$OPENSHIFT_TOKEN" \
             --insecure-skip-tls-verify=true
+
           oc project "$OPENSHIFT_NAMESPACE"
+
+          echo "Authenticated OpenShift user:"
+          oc whoami
+
+          echo "Selected OpenShift project:"
+          oc project --short
+
+          echo "OpenShift client and server versions:"
+          oc version
 
       - name: Create or update runtime secrets
         shell: bash
         run: |
+          set -euo pipefail
+
           oc create secret generic att-langgraph-orchestrator-secrets \
             --from-literal=DATABRICKS_TOKEN="$DATABRICKS_TOKEN" \
             --from-literal=SNOWFLAKE_PAT="$SNOWFLAKE_PAT" \
-            --from-literal=APP_API_KEY="$APP_API_KEY" \
-            --dry-run=client -o yaml | oc apply -f -
+            --from-literal=APP_API_KEY="${APP_API_KEY:-}" \
+            --dry-run=client \
+            --output=yaml |
+          oc apply -f -
 
-      - name: Apply build resources
-        run: oc apply -f openshift/buildconfig.yaml
+          echo "Runtime secret created or updated."
+
+      - name: Apply OpenShift build resources
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          oc apply -f openshift/buildconfig.yaml
+
+          echo "OpenShift build resources:"
+          oc get imagestream att-langgraph-orchestrator
+          oc get buildconfig att-langgraph-orchestrator
 
       - name: Build image inside OpenShift
+        shell: bash
         run: |
+          set -euo pipefail
+
           oc start-build att-langgraph-orchestrator \
             --from-dir=. \
             --follow \
             --wait
 
-      - name: Apply runtime resources
+          echo "Recent OpenShift builds:"
+          oc get builds \
+            --sort-by=.metadata.creationTimestamp |
+          tail -n 10
+
+      - name: Apply OpenShift runtime resources
         shell: bash
         run: |
-          envsubst < openshift/configmap.yaml | oc apply -f -
-          envsubst < openshift/deployment.yaml | oc apply -f -
+          set -euo pipefail
+
+          envsubst < openshift/configmap.yaml |
+          oc apply -f -
+
+          envsubst < openshift/deployment.yaml |
+          oc apply -f -
+
           oc apply -f openshift/service.yaml
           oc apply -f openshift/route.yaml
-          oc rollout restart deployment/att-langgraph-orchestrator
-          oc rollout status deployment/att-langgraph-orchestrator --timeout=5m
+
+      - name: Restart and verify deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          oc rollout restart \
+            deployment/att-langgraph-orchestrator
+
+          oc rollout status \
+            deployment/att-langgraph-orchestrator \
+            --timeout=5m
+
+          echo "Deployment:"
+          oc get deployment att-langgraph-orchestrator
+
+          echo "Pods:"
+          oc get pods \
+            -l app=att-langgraph-orchestrator \
+            -o wide
+
+          echo "Service:"
+          oc get service att-langgraph-orchestrator
+
+          echo "Route:"
+          oc get route att-langgraph-orchestrator
 
       - name: Smoke test
         shell: bash
         run: |
-          ROUTE_HOST=$(oc get route att-langgraph-orchestrator -o jsonpath='{.spec.host}')
-          APP_URL="https://${ROUTE_HOST}"
-          echo "Application URL: $APP_URL"
-          curl --retry 10 --retry-delay 5 --retry-all-errors \
-            --fail-with-body "$APP_URL/health/ready"
+          set -euo pipefail
 
+          ROUTE_HOST="$(
+            oc get route att-langgraph-orchestrator \
+              -o jsonpath='{.spec.host}'
+          )"
+
+          test -n "$ROUTE_HOST" || {
+            echo "OpenShift Route host is empty"
+            exit 1
+          }
+
+          APP_URL="https://${ROUTE_HOST}"
+
+          echo "Application URL: $APP_URL"
+          echo "Testing liveness endpoint..."
+
+          curl \
+            --fail-with-body \
+            --retry 10 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            "$APP_URL/health/live"
+
+          echo
+          echo "Testing readiness endpoint..."
+
+          curl \
+            --fail-with-body \
+            --retry 10 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            "$APP_URL/health/ready"
+
+          echo
+          echo "OpenShift smoke test completed successfully."
+
+      - name: Show diagnostics after failure
+        if: failure()
+        shell: bash
+        run: |
+          echo "Workflow failed. Collecting available diagnostics."
+
+          if ! command -v oc >/dev/null 2>&1; then
+            echo "The oc command is unavailable; skipping OpenShift diagnostics."
+            exit 0
+          fi
+
+          if ! oc whoami >/dev/null 2>&1; then
+            echo "Not authenticated to OpenShift; skipping cluster diagnostics."
+            exit 0
+          fi
+
+          echo "Pods:"
+          oc get pods \
+            -l app=att-langgraph-orchestrator \
+            -o wide || true
+
+          echo "Deployment:"
+          oc describe \
+            deployment/att-langgraph-orchestrator || true
+
+          echo "Recent events:"
+          oc get events \
+            --sort-by=.lastTimestamp |
+          tail -n 50 || true
+
+          echo "Application logs:"
+          oc logs \
+            deployment/att-langgraph-orchestrator \
+            --tail=200 || true
