@@ -33,6 +33,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://admin-panel-edward-jing-dev.apps.rm1.0a51.p1.openshiftapps.com",
+        "https://admin-panel-go4share-me-dev.apps.rm2.thpm.p1.openshiftapps.com",
         "http://localhost:3000",
     ],
     allow_credentials=False,
