@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 
+from att_agent.education.api import router as education_router
 from att_agent.config import Settings, get_settings
 from att_agent.graph import AgentGraph, build_graph
 from att_agent.models import AgentState, AskRequest, AskResponse
@@ -110,3 +111,6 @@ async def ask(
         evidence=result.get("evidence", []),
         errors=result.get("errors", []),
     )
+
+# Isolated education retrieval route; existing prototype endpoints unchanged.
+app.include_router(education_router)
