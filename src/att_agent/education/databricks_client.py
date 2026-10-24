@@ -22,6 +22,8 @@ def get_education_workspace_client() -> WorkspaceClient:
     if token:
         return WorkspaceClient(host=host, token=token, auth_type="pat")
     raise RuntimeError(
-        "Configure EDUCATION_DATABRICKS_CLIENT_ID and "
-        "EDUCATION_DATABRICKS_CLIENT_SECRET, or EDUCATION_DATABRICKS_TOKEN"
+        "Education Databricks credentials are not configured. "
+        "Set EDUCATION_DATABRICKS_CLIENT_ID and "
+        "EDUCATION_DATABRICKS_CLIENT_SECRET, or "
+        "EDUCATION_DATABRICKS_TOKEN."
     )

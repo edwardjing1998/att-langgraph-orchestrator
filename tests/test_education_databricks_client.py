@@ -5,9 +5,7 @@ from att_agent.education import databricks_client
 
 def test_education_uses_its_own_oauth_settings(monkeypatch):
     calls = []
-    monkeypatch.setattr(
-        databricks_client, "WorkspaceClient", lambda **kwargs: calls.append(kwargs)
-    )
+    monkeypatch.setattr(databricks_client, "WorkspaceClient", lambda **kwargs: calls.append(kwargs))
     monkeypatch.setenv("DATABRICKS_HOST", "https://legacy.example")
     monkeypatch.setenv("DATABRICKS_TOKEN", "legacy")
     monkeypatch.setenv("EDUCATION_DATABRICKS_HOST", "https://education.example/")
@@ -38,5 +36,8 @@ def test_education_does_not_fallback_to_legacy_token(monkeypatch):
 
     import pytest
 
-    with pytest.raises(RuntimeError, match="Education Databricks"):  # no legacy fallback
+    with pytest.raises(
+        RuntimeError,
+        match="Education Databricks credentials are not configured",
+    ):  # no legacy fallback
         databricks_client.get_education_workspace_client()
