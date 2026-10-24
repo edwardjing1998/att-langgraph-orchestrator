@@ -54,4 +54,3 @@ class AgentState(TypedDict, total=False):
     evidence: list[Evidence]
     errors: list[str]
     answer: str
-

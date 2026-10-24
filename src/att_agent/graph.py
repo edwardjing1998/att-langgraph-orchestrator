@@ -67,9 +67,7 @@ class AgentGraph:
         self,
         state: AgentState,
     ) -> dict[str, object]:
-        decision = await self._ai_router.classify(
-            state["question"]
-        )
+        decision = await self._ai_router.classify(state["question"])
 
         return {
             "intents": decision.intents,
@@ -96,10 +94,7 @@ class AgentGraph:
                 (
                     "policy",
                     self._databricks.search(
-                        index_name=(
-                            self._settings
-                            .databricks_policy_index
-                        ),
+                        index_name=(self._settings.databricks_policy_index),
                         question=state["question"],
                         source_type="policy",
                         limit=limit,
@@ -112,10 +107,7 @@ class AgentGraph:
                 (
                     "billing_knowledge",
                     self._databricks.search(
-                        index_name=(
-                            self._settings
-                            .databricks_billing_index
-                        ),
+                        index_name=(self._settings.databricks_billing_index),
                         question=state["question"],
                         source_type="billing_knowledge",
                         limit=limit,
@@ -124,9 +116,7 @@ class AgentGraph:
             )
 
         if "billing_transaction" in intents:
-            billing_account_token = state.get(
-                "billing_account_token"
-            )
+            billing_account_token = state.get("billing_account_token")
 
             if billing_account_token:
                 tasks.append(
@@ -134,24 +124,16 @@ class AgentGraph:
                         "billing_transaction",
                         self._snowflake.search(
                             question=state["question"],
-                            billing_account_token=(
-                                billing_account_token
-                            ),
+                            billing_account_token=(billing_account_token),
                             limit=limit,
                         ),
                     )
                 )
             else:
-                errors.append(
-                    "billing_transaction requires an "
-                    "authorized billing account token"
-                )
+                errors.append("billing_transaction requires an authorized billing account token")
 
         results = await asyncio.gather(
-            *(
-                task
-                for _, task in tasks
-            ),
+            *(task for _, task in tasks),
             return_exceptions=True,
         )
 
@@ -200,11 +182,9 @@ class AgentGraph:
 
         if self._settings.llm_enabled:
             try:
-                answer = (
-                    await self._databricks.generate_answer(
-                        state["question"],
-                        evidence,
-                    )
+                answer = await self._databricks.generate_answer(
+                    state["question"],
+                    evidence,
                 )
 
                 return {
@@ -224,17 +204,11 @@ class AgentGraph:
                 ]
 
                 return {
-                    "answer": _extractive_fallback(
-                        evidence
-                    ),
+                    "answer": _extractive_fallback(evidence),
                     "errors": errors,
                 }
 
-        return {
-            "answer": _extractive_fallback(
-                evidence
-            )
-        }
+        return {"answer": _extractive_fallback(evidence)}
 
     async def close(self) -> None:
         await asyncio.gather(
@@ -250,40 +224,24 @@ def build_graph(
     databricks = DatabricksClient(
         host=settings.databricks_host,
         token=settings.databricks_token,
-        chat_endpoint=(
-            settings.databricks_chat_endpoint
-        ),
-        timeout_seconds=(
-            settings.request_timeout_seconds
-        ),
+        chat_endpoint=(settings.databricks_chat_endpoint),
+        timeout_seconds=(settings.request_timeout_seconds),
     )
 
     snowflake = SnowflakeCortexClient(
         host=settings.snowflake_host,
         pat=settings.snowflake_pat,
-        database=(
-            settings.snowflake_cortex_database
-        ),
-        schema=(
-            settings.snowflake_cortex_schema
-        ),
-        service=(
-            settings.snowflake_cortex_service
-        ),
-        timeout_seconds=(
-            settings.request_timeout_seconds
-        ),
+        database=(settings.snowflake_cortex_database),
+        schema=(settings.snowflake_cortex_schema),
+        service=(settings.snowflake_cortex_service),
+        timeout_seconds=(settings.request_timeout_seconds),
     )
 
     ai_router = DatabricksAIRouter(
         host=settings.databricks_host,
         token=settings.databricks_token,
-        endpoint=(
-            settings.databricks_chat_endpoint
-        ),
-        timeout_seconds=(
-            settings.request_timeout_seconds
-        ),
+        endpoint=(settings.databricks_chat_endpoint),
+        timeout_seconds=(settings.request_timeout_seconds),
         enabled=settings.llm_enabled,
     )
 
@@ -298,23 +256,15 @@ def build_graph(
 def _extractive_fallback(
     evidence: list[Evidence],
 ) -> str:
-    lines = [
-        "Retrieved approved evidence:"
-    ]
+    lines = ["Retrieved approved evidence:"]
 
     for item in evidence[:6]:
-        compact = " ".join(
-            item.content.split()
-        )
+        compact = " ".join(item.content.split())
 
         if len(compact) > 280:
-            compact = (
-                f"{compact[:277]}..."
-            )
+            compact = f"{compact[:277]}..."
 
-        lines.append(
-            f"- [{item.document_id}] {compact}"
-        )
+        lines.append(f"- [{item.document_id}] {compact}")
 
     return "\n".join(lines)
 
@@ -327,10 +277,7 @@ def _safe_error(
         exception,
         httpx.HTTPStatusError,
     ):
-        return (
-            f"{source} returned HTTP "
-            f"{exception.response.status_code}"
-        )
+        return f"{source} returned HTTP {exception.response.status_code}"
 
     if isinstance(
         exception,
@@ -338,7 +285,4 @@ def _safe_error(
     ):
         return f"{source} timed out"
 
-    return (
-        f"{source} failed: "
-        f"{type(exception).__name__}"
-    )
+    return f"{source} failed: {type(exception).__name__}"

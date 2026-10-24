@@ -49,16 +49,11 @@ class DatabricksClient:
 
         response = await self._client.request(
             method="GET",
-            url=(
-                f"/api/2.0/vector-search/indexes/"
-                f"{index_name}/query"
-            ),
+            url=(f"/api/2.0/vector-search/indexes/{index_name}/query"),
             json={
                 "query_text": question,
                 "columns": columns,
-                "filters": {
-                    "access_level NOT": "RESTRICTED"
-                },
+                "filters": {"access_level NOT": "RESTRICTED"},
                 "num_results": limit,
                 "query_type": "HYBRID",
             },
@@ -84,11 +79,7 @@ class DatabricksClient:
                     content=str(row[4] or ""),
                     source_reference=_optional_text(row[5]),
                     access_level=_optional_text(row[6]),
-                    score=(
-                        float(row[7])
-                        if len(row) > 7 and row[7] is not None
-                        else None
-                    ),
+                    score=(float(row[7]) if len(row) > 7 and row[7] is not None else None),
                     metadata={
                         "domain": row[2],
                         "category": row[3],
@@ -103,10 +94,7 @@ class DatabricksClient:
         question: str,
         evidence: list[Evidence],
     ) -> str:
-        context = [
-            item.model_dump(mode="json")
-            for item in evidence
-        ]
+        context = [item.model_dump(mode="json") for item in evidence]
 
         prompt = (
             "Answer the user using only the supplied evidence. "
@@ -119,18 +107,12 @@ class DatabricksClient:
         )
 
         response = await self._client.post(
-            (
-                f"/serving-endpoints/"
-                f"{self._chat_endpoint}/invocations"
-            ),
+            (f"/serving-endpoints/{self._chat_endpoint}/invocations"),
             json={
                 "messages": [
                     {
                         "role": "system",
-                        "content": (
-                            "You are a governed telecom "
-                            "billing assistant."
-                        ),
+                        "content": ("You are a governed telecom billing assistant."),
                     },
                     {
                         "role": "user",
@@ -165,10 +147,7 @@ def _extract_generated_text(
         if isinstance(first, dict):
             message = first.get("message")
 
-            if (
-                isinstance(message, dict)
-                and message.get("content")
-            ):
+            if isinstance(message, dict) and message.get("content"):
                 return str(message["content"])
 
             if first.get("text"):
@@ -190,7 +169,4 @@ def _extract_generated_text(
 
         return str(first)
 
-    raise ValueError(
-        "Databricks chat endpoint returned "
-        "no generated answer"
-    )
+    raise ValueError("Databricks chat endpoint returned no generated answer")

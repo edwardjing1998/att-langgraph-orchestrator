@@ -19,4 +19,3 @@ def test_extractive_fallback_contains_document_citation() -> None:
 
     assert "[POL-1001]" in answer
     assert "incorrect roaming charge" in answer
-

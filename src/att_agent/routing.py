@@ -64,4 +64,3 @@ def classify_intents(question: str) -> list[Intent]:
         intents.append("billing_knowledge")
 
     return intents
-

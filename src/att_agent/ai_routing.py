@@ -108,10 +108,7 @@ Customer-specific transaction retrieval requires a billing-account token.
 """.strip()
 
         response = await self._client.post(
-            (
-                f"/serving-endpoints/"
-                f"{self._endpoint}/invocations"
-            ),
+            (f"/serving-endpoints/{self._endpoint}/invocations"),
             json={
                 "messages": [
                     {
@@ -141,17 +138,13 @@ def _parse_decision(
     decoded = json.loads(cleaned_text)
 
     if not isinstance(decoded, dict):
-        raise ValueError(
-            "The routing model response must be a JSON object"
-        )
+        raise ValueError("The routing model response must be a JSON object")
 
     intents = decoded.get("intents", [])
 
     if isinstance(intents, list):
         # Remove duplicate intents while preserving order.
-        decoded["intents"] = list(
-            dict.fromkeys(intents)
-        )
+        decoded["intents"] = list(dict.fromkeys(intents))
 
     return RoutingDecision.model_validate(decoded)
 
@@ -167,10 +160,7 @@ def _extract_generated_text(
         if isinstance(first, dict):
             message = first.get("message")
 
-            if (
-                isinstance(message, dict)
-                and message.get("content")
-            ):
+            if isinstance(message, dict) and message.get("content"):
                 return str(message["content"])
 
             if first.get("text"):
@@ -192,9 +182,7 @@ def _extract_generated_text(
 
         return str(first)
 
-    raise ValueError(
-        "The routing model returned no generated text"
-    )
+    raise ValueError("The routing model returned no generated text")
 
 
 def _remove_code_fence(
@@ -220,8 +208,6 @@ def _fallback_decision(
 
     return RoutingDecision(
         intents=intents,
-        needs_billing_account_token=(
-            "billing_transaction" in intents
-        ),
+        needs_billing_account_token=("billing_transaction" in intents),
         reason="Deterministic routing fallback",
     )

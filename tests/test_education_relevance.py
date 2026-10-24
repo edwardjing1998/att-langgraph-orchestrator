@@ -15,9 +15,7 @@ def test_verified_search_filters_rejected(monkeypatch):
     monkeypatch.setattr(
         verifier,
         "retrieve",
-        lambda *args, **kwargs: [
-            {"search_id": "1", "subject": "bible", "title": "A"}
-        ],
+        lambda *args, **kwargs: [{"search_id": "1", "subject": "bible", "title": "A"}],
     )
     monkeypatch.setattr(verifier, "verify_one", lambda *args, **kwargs: (None, "irrelevant"))
     result = verified_search(object(), "a question", subject="bible")

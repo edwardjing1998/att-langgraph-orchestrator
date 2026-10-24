@@ -53,9 +53,7 @@ class SnowflakeCortexClient:
             "SOURCE_REFERENCE",
             "ACCESS_LEVEL",
         ]
-        public_filter: dict[str, object] = {
-            "@not": {"@eq": {"ACCESS_LEVEL": "RESTRICTED"}}
-        }
+        public_filter: dict[str, object] = {"@not": {"@eq": {"ACCESS_LEVEL": "RESTRICTED"}}}
         query_filter: dict[str, object] = public_filter
         if billing_account_token:
             query_filter = {
@@ -115,4 +113,3 @@ def _optional_float(value: object) -> float | None:
         return None if value is None else float(value)
     except (TypeError, ValueError):
         return None
-

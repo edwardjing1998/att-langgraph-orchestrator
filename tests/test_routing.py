@@ -21,4 +21,3 @@ def test_classify_intents(question: str, expected: set[str]) -> None:
 
 def test_unknown_question_defaults_to_billing_knowledge() -> None:
     assert classify_intents("Please help me understand this") == ["billing_knowledge"]
-

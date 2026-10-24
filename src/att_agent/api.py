@@ -92,8 +92,7 @@ async def ask(
         "question": request_body.question,
         "billing_account_token": request_body.billing_account_token,
         "max_results_per_source": (
-            request_body.max_results_per_source
-            or settings.max_results_per_source
+            request_body.max_results_per_source or settings.max_results_per_source
         ),
         "errors": [],
         "evidence": [],
@@ -111,6 +110,7 @@ async def ask(
         evidence=result.get("evidence", []),
         errors=result.get("errors", []),
     )
+
 
 # Isolated education retrieval route; existing prototype endpoints unchanged.
 app.include_router(education_router)
