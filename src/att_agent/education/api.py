@@ -4,10 +4,10 @@ import asyncio
 import logging
 import os
 
-from databricks.sdk import WorkspaceClient
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from att_agent.education.databricks_client import get_education_workspace_client
 from att_agent.education.relevance_verifier import verified_search
 
 LOGGER = logging.getLogger(__name__)
@@ -20,11 +20,6 @@ class EducationSearchRequest(BaseModel):
     top_k: int = Field(default=10, ge=1, le=30)
 
 
-def workspace_client(settings):
-    """Use existing token authentication configured for the legacy application."""
-    return WorkspaceClient(host=settings.databricks_host, token=settings.databricks_token)
-
-
 @router.post("/search")
 async def search(
     payload: EducationSearchRequest,
@@ -35,10 +30,10 @@ async def search(
     if settings.app_api_key and x_api_key != settings.app_api_key:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
-    ws = workspace_client(settings)
     index = os.getenv("EDUCATION_SEARCH_INDEX", "education_rag.gold.approved_content_index")
     chat_endpoint = os.getenv("EDUCATION_CHAT_ENDPOINT", "databricks-gpt-oss-120b")
     try:
+        ws = get_education_workspace_client()
         return await asyncio.to_thread(
             verified_search,
             ws,

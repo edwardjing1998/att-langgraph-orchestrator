@@ -26,6 +26,17 @@ spec:
                 name: att-langgraph-orchestrator-config
             - secretRef:
                 name: att-langgraph-orchestrator-secrets
+          env:
+            - name: EDUCATION_DATABRICKS_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: education-databricks-auth
+                  key: client-id
+            - name: EDUCATION_DATABRICKS_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: education-databricks-auth
+                  key: client-secret
           resources:
             requests:
               cpu: 100m

@@ -1,3 +1,4 @@
+
 name: Deploy LangGraph Orchestrator to OpenShift
 
 on:
@@ -24,19 +25,28 @@ jobs:
     environment: staging
 
     env:
+      # Existing OpenShift credentials
       OPENSHIFT_SERVER: ${{ secrets.OPENSHIFT_SERVER }}
       OPENSHIFT_TOKEN: ${{ secrets.OPENSHIFT_TOKEN }}
       OPENSHIFT_NAMESPACE: ${{ secrets.OPENSHIFT_NAMESPACE }}
 
+      # Existing application secrets (unchanged)
       DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
       SNOWFLAKE_PAT: ${{ secrets.SNOWFLAKE_PAT }}
       APP_API_KEY: ${{ secrets.APP_API_KEY }}
 
+      # Existing Databricks workspace (unchanged)
       DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
       DATABRICKS_POLICY_INDEX: ${{ vars.DATABRICKS_POLICY_INDEX }}
       DATABRICKS_BILLING_INDEX: ${{ vars.DATABRICKS_BILLING_INDEX }}
       DATABRICKS_CHAT_ENDPOINT: ${{ vars.DATABRICKS_CHAT_ENDPOINT }}
 
+      # NEW: Education Azure Databricks workspace
+      EDUCATION_DATABRICKS_HOST: ${{ vars.EDUCATION_DATABRICKS_HOST }}
+      EDUCATION_SEARCH_INDEX: ${{ vars.EDUCATION_SEARCH_INDEX }}
+      EDUCATION_CHAT_ENDPOINT: ${{ vars.EDUCATION_CHAT_ENDPOINT }}
+
+      # Existing Snowflake configuration (unchanged)
       SNOWFLAKE_HOST: ${{ vars.SNOWFLAKE_HOST }}
       SNOWFLAKE_CORTEX_DATABASE: ${{ vars.SNOWFLAKE_CORTEX_DATABASE }}
       SNOWFLAKE_CORTEX_SCHEMA: ${{ vars.SNOWFLAKE_CORTEX_SCHEMA }}
@@ -66,14 +76,14 @@ jobs:
           python -m pip install -r requirements-dev.txt
 
       - name: Lint
-        run: ruff check src tests
+        run: |
+          ruff check src tests
+          ruff format --check src tests
 
       - name: Test
         run: pytest -q
 
-      # Install the OpenShift CLI directly from the official Red Hat mirror.
-      # This replaces redhat-actions/oc-installer, which failed because it
-      # generated an invalid download URL for version "4.18".
+      # Install OpenShift CLI directly from official mirror.
       - name: Install OpenShift CLI
         shell: bash
         run: |
@@ -106,7 +116,7 @@ jobs:
             --directory "$OC_DOWNLOAD_DIR"
 
           test -f "$OC_DOWNLOAD_DIR/oc" || {
-            echo "The downloaded archive does not contain the oc executable"
+            echo "Downloaded archive does not contain oc"
             exit 1
           }
 
@@ -137,11 +147,16 @@ jobs:
             SNOWFLAKE_CORTEX_DATABASE
             SNOWFLAKE_CORTEX_SCHEMA
             SNOWFLAKE_CORTEX_SERVICE
+
+            # NEW Education configuration
+            EDUCATION_DATABRICKS_HOST
+            EDUCATION_SEARCH_INDEX
+            EDUCATION_CHAT_ENDPOINT
           )
 
           for variable_name in "${required_variables[@]}"; do
             if [ -z "${!variable_name:-}" ]; then
-              echo "Missing required GitHub secret or variable: $variable_name"
+              echo "Missing required variable: $variable_name"
               exit 1
             fi
           done
@@ -162,6 +177,11 @@ jobs:
             echo "LLM_ENABLED=false" >> "$GITHUB_ENV"
             echo "LLM_ENABLED was not configured; using false."
           fi
+
+          echo "Existing Databricks: $DATABRICKS_HOST"
+          echo "Education Databricks: $EDUCATION_DATABRICKS_HOST"
+          echo "Education index: $EDUCATION_SEARCH_INDEX"
+          echo "Education chat: $EDUCATION_CHAT_ENDPOINT"
 
           echo "Deployment configuration validation completed."
 
@@ -185,11 +205,48 @@ jobs:
           echo "OpenShift client and server versions:"
           oc version
 
+      # NEW: Make sure the Education OAuth Secret exists
+      # before applying the Deployment.
+      - name: Validate Education Databricks Secret
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SECRET_NAME="education-databricks-auth"
+
+          oc get secret "$SECRET_NAME" \
+            -n "$OPENSHIFT_NAMESPACE" \
+            >/dev/null
+
+          echo "Education Databricks Secret exists."
+
+          CLIENT_ID_PRESENT="$(
+            oc get secret "$SECRET_NAME" \
+              -n "$OPENSHIFT_NAMESPACE" \
+              -o go-template='{{if index .data "client-id"}}yes{{else}}no{{end}}'
+          )"
+
+          CLIENT_SECRET_PRESENT="$(
+            oc get secret "$SECRET_NAME" \
+              -n "$OPENSHIFT_NAMESPACE" \
+              -o go-template='{{if index .data "client-secret"}}yes{{else}}no{{end}}'
+          )"
+
+          if [ "$CLIENT_ID_PRESENT" != "yes" ] || \
+             [ "$CLIENT_SECRET_PRESENT" != "yes" ]; then
+            echo "Education Secret is missing OAuth credentials."
+            exit 1
+          fi
+
+          echo "Education OAuth credential keys are present."
+
       - name: Create or update runtime secrets
         shell: bash
         run: |
           set -euo pipefail
 
+          # Existing application credentials remain unchanged.
+          # Education credentials are managed in a separate Secret.
           oc create secret generic att-langgraph-orchestrator-secrets \
             --from-literal=DATABRICKS_TOKEN="$DATABRICKS_TOKEN" \
             --from-literal=SNOWFLAKE_PAT="$SNOWFLAKE_PAT" \
@@ -198,7 +255,7 @@ jobs:
             --output=yaml |
           oc apply -f -
 
-          echo "Runtime secret created or updated."
+          echo "Existing runtime Secret created or updated."
 
       - name: Apply OpenShift build resources
         shell: bash
@@ -231,9 +288,11 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Apply ConfigMap with all GitHub variable values.
           envsubst < openshift/configmap.yaml |
           oc apply -f -
 
+          # Apply Deployment referencing both credential Secrets.
           envsubst < openshift/deployment.yaml |
           oc apply -f -
 
@@ -265,6 +324,59 @@ jobs:
 
           echo "Route:"
           oc get route att-langgraph-orchestrator
+
+      # NEW: Verify both Databricks configurations are present
+      # in the actual running container.
+      - name: Verify dual Databricks configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Checking existing Databricks workspace..."
+          ACTUAL_LEGACY_HOST="$(
+            oc exec deployment/att-langgraph-orchestrator \
+              -- printenv DATABRICKS_HOST
+          )"
+
+          test "$ACTUAL_LEGACY_HOST" = "$DATABRICKS_HOST" || {
+            echo "Existing Databricks host mismatch."
+            exit 1
+          }
+
+          echo "Checking Education Databricks workspace..."
+          ACTUAL_EDUCATION_HOST="$(
+            oc exec deployment/att-langgraph-orchestrator \
+              -- printenv EDUCATION_DATABRICKS_HOST
+          )"
+
+          test "$ACTUAL_EDUCATION_HOST" = \
+            "$EDUCATION_DATABRICKS_HOST" || {
+            echo "Education Databricks host mismatch."
+            exit 1
+          }
+
+          echo "Checking Education Vector Search index..."
+          ACTUAL_INDEX="$(
+            oc exec deployment/att-langgraph-orchestrator \
+              -- printenv EDUCATION_SEARCH_INDEX
+          )"
+
+          test "$ACTUAL_INDEX" = "$EDUCATION_SEARCH_INDEX" || {
+            echo "Education index mismatch."
+            exit 1
+          }
+
+          echo "Checking Education OAuth credentials..."
+          oc exec deployment/att-langgraph-orchestrator -- \
+            sh -c '
+              test -n "${EDUCATION_DATABRICKS_CLIENT_ID:-}"
+              test -n "${EDUCATION_DATABRICKS_CLIENT_SECRET:-}"
+            '
+
+          echo "Both Databricks environments are configured."
+          echo "Existing: $ACTUAL_LEGACY_HOST"
+          echo "Education: $ACTUAL_EDUCATION_HOST"
+          echo "Index: $ACTUAL_INDEX"
 
       - name: Smoke test
         shell: bash
@@ -313,12 +425,12 @@ jobs:
           echo "Workflow failed. Collecting available diagnostics."
 
           if ! command -v oc >/dev/null 2>&1; then
-            echo "The oc command is unavailable; skipping OpenShift diagnostics."
+            echo "oc command unavailable; skipping diagnostics."
             exit 0
           fi
 
           if ! oc whoami >/dev/null 2>&1; then
-            echo "Not authenticated to OpenShift; skipping cluster diagnostics."
+            echo "Not authenticated; skipping diagnostics."
             exit 0
           fi
 

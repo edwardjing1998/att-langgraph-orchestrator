@@ -44,12 +44,13 @@ def retrieve(
         },
     )
     names = [item["name"] for item in response.get("manifest", {}).get("columns", [])]
-
     rows = response.get("result", {}).get("data_array", [])
-
     documents = [dict(zip(names, row, strict=True)) for row in rows]
-
-    return [doc for doc in documents if doc.get("search_id") and doc.get("searchable_text")]
+    return [
+        doc
+        for doc in documents
+        if not subject or str(doc.get("subject", "")).casefold() == subject.casefold()
+    ]
 
 
 def verify_one(
@@ -71,7 +72,7 @@ def verify_one(
         "Return ONLY a JSON object with keys: relevant (boolean), evidence (string), "
         "reason (string). If relevant is true, evidence must be an exact continuous "
         "quotation of the supporting words from the passage (you may replace line "
-        'breaks with spaces). If insufficient, return relevant=false and evidence="".'
+        "breaks with spaces). If insufficient, return relevant=false and evidence=\"\"."
     )
     content = f"QUESTION:\n{question}\n\nTITLE:\n{doc.get('title', '')}\n\nPASSAGE:\n{passage}"
     response = ws.serving_endpoints.query(
@@ -92,7 +93,10 @@ def verify_one(
         return None, f"model rejected: {decision.get('reason', '')}"
     evidence = decision.get("evidence")
     if not evidence_matches(evidence, passage):
-        return None, (f"evidence not found in source after whitespace normalization: {evidence!r}")
+        return None, (
+            "evidence not found in source after whitespace normalization: "
+            f"{evidence!r}"
+        )
     return {
         "search_id": doc.get("search_id"),
         "subject": doc.get("subject"),
@@ -132,11 +136,15 @@ def verified_search(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--question", default="What promise did Abraham receive from the Lord?")
+    parser.add_argument(
+        "--question", default="What promise did Abraham receive from the Lord?"
+    )
     parser.add_argument(
         "--profile", default=None, help="Databricks CLI profile; omit in Databricks jobs"
     )
-    parser.add_argument("--subject", default="bible", help="Use an empty string for all subjects")
+    parser.add_argument(
+        "--subject", default="bible", help="Use an empty string for all subjects"
+    )
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--chat-endpoint", default=CHAT_ENDPOINT)
     args = parser.parse_args()
@@ -147,9 +155,13 @@ def main() -> None:
     selected = [
         doc
         for doc in candidates
-        if not args.subject or str(doc.get("subject", "")).casefold() == args.subject.casefold()
+        if not args.subject
+        or str(doc.get("subject", "")).casefold() == args.subject.casefold()
     ]
-    print(f"Checking {len(selected)} candidate(s) after subject filter: {args.subject or 'ALL'}")
+    print(
+        f"Checking {len(selected)} candidate(s) after subject filter: "
+        f"{args.subject or 'ALL'}"
+    )
     accepted = []
     for doc in selected:
         result, explanation = verify_one(ws, args.question, doc, args.chat_endpoint)
