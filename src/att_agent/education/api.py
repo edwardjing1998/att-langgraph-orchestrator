@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+from typing import Literal
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -18,6 +19,7 @@ class EducationSearchRequest(BaseModel):
     question: str = Field(min_length=3, max_length=2000)
     subject: str = Field(default="", max_length=100)
     top_k: int = Field(default=10, ge=1, le=30)
+    search_intent: Literal["auto", "answer_question", "find_resources"] = "auto"
 
 
 @router.post("/search")
@@ -37,11 +39,12 @@ async def search(
         return await asyncio.to_thread(
             verified_search,
             ws,
-            payload.question,
-            payload.subject,
-            payload.top_k,
-            index,
-            chat_endpoint,
+            question=payload.question,
+            subject=payload.subject,
+            top_k=payload.top_k,
+            index=index,
+            chat_endpoint=chat_endpoint,
+            search_intent=payload.search_intent,
         )
     except Exception as exc:
         LOGGER.exception("Education search failed")
