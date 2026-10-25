@@ -23,7 +23,10 @@ def test_relative_paths_require_explicit_base():
 
 def test_duplicate_images_and_malformed_metadata():
     assert resolve_document_images({"image_links_json": "oops"}) == []
-    assert len(resolve_document_images({"image_links_json": '["https://a.example/x.png", "https://a.example/x.png"]'})) == 1
+    duplicate_images = {
+        "image_links_json": ('["https://a.example/x.png", "https://a.example/x.png"]')
+    }
+    assert len(resolve_document_images(duplicate_images)) == 1
 
 
 def test_no_path_traversal():
@@ -36,8 +39,16 @@ def test_vector_search_requests_image_metadata():
         def do(self, **kwargs):
             assert "image_links_json" in kwargs["body"]["columns"]
             return {
-                "manifest": {"columns": [{"name": "search_id"}, {"name": "subject"}, {"name": "image_links_json"}]},
-                "result": {"data_array": [["one", "bible", '["https://images.example.org/a.png"]']]},
+                "manifest": {
+                    "columns": [
+                        {"name": "search_id"},
+                        {"name": "subject"},
+                        {"name": "image_links_json"},
+                    ]
+                },
+                "result": {
+                    "data_array": [["one", "bible", '["https://images.example.org/a.png"]']]
+                },
             }
 
     ws = SimpleNamespace(api_client=FakeClient())
@@ -60,7 +71,9 @@ def test_verified_result_keeps_image_url():
             )
         )
     )
-    ws = SimpleNamespace(serving_endpoints=SimpleNamespace(query=lambda **kwargs: SimpleNamespace(choices=[choice])))
+    ws = SimpleNamespace(
+        serving_endpoints=SimpleNamespace(query=lambda **kwargs: SimpleNamespace(choices=[choice]))
+    )
     doc = {
         "search_id": "one",
         "subject": "mathematics",

@@ -63,12 +63,26 @@ def resolve_document_images(doc: dict, base_url: str | None = None) -> list[dict
             path = next(
                 (
                     item[key]
-                    for key in ("url", "image_url", "signed_url", "blob_url", "blob_path", "path", "source_path", "href")
+                    for key in (
+                        "url",
+                        "image_url",
+                        "signed_url",
+                        "blob_url",
+                        "blob_path",
+                        "path",
+                        "source_path",
+                        "href",
+                    )
                     if isinstance(item.get(key), str) and item[key]
                 ),
                 "",
             )
-            alt = str(item.get("alt_text") or item.get("alt") or item.get("caption") or "Educational illustration")
+            alt = str(
+                item.get("alt_text")
+                or item.get("alt")
+                or item.get("caption")
+                or "Educational illustration"
+            )
         else:
             continue
         path = path.strip()
