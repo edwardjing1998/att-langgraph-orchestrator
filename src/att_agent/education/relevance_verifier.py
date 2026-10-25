@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import unicodedata
 from typing import Literal
+import unicodedata
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
+
+from att_agent.education.image_resolver import resolve_document_images
 
 INDEX = "education_rag.gold.approved_content_index"
 CHAT_ENDPOINT = "databricks-gpt-oss-120b"
@@ -42,7 +44,10 @@ def retrieve(
         path=f"/api/2.0/vector-search/indexes/{index}/query",
         body={
             "query_text": question,
-            "columns": ["search_id", "subject", "content_type", "title", "searchable_text"],
+            "columns": [
+                "search_id", "subject", "content_type", "title",
+                "searchable_text", "image_links_json",
+            ],
             "num_results": top_k,
         },
     )
@@ -127,7 +132,10 @@ def verify_one(
         return None, "passage does not contain sufficient answer evidence"
     evidence = decision.get("evidence")
     if not evidence_matches(evidence, passage):
-        return None, (f"evidence not found in source after whitespace normalization: {evidence!r}")
+        return None, (
+            "evidence not found in source after whitespace normalization: "
+            f"{evidence!r}"
+        )
     return {
         "search_id": doc.get("search_id"),
         "subject": doc.get("subject"),
@@ -138,6 +146,7 @@ def verify_one(
         "search_score": doc.get("score", doc.get("search_score")),
         "evidence": evidence,
         "reason": decision.get("reason", ""),
+        "images": resolve_document_images(doc),
     }, "accepted"
 
 
@@ -157,7 +166,9 @@ def verified_search(
     accepted = []
     rejections = []
     for doc in candidates:
-        result, reason = verify_one(ws, question, doc, chat_endpoint, search_intent=search_intent)
+        result, reason = verify_one(
+            ws, question, doc, chat_endpoint, search_intent=search_intent
+        )
         if result is not None:
             accepted.append(result)
         else:
@@ -174,15 +185,18 @@ def verified_search(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--question", default="What promise did Abraham receive from the Lord?")
+    parser.add_argument(
+        "--question", default="What promise did Abraham receive from the Lord?"
+    )
     parser.add_argument(
         "--profile", default=None, help="Databricks CLI profile; omit in Databricks jobs"
     )
-    parser.add_argument("--subject", default="bible", help="Use an empty string for all subjects")
+    parser.add_argument(
+        "--subject", default="bible", help="Use an empty string for all subjects"
+    )
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument(
-        "--search-intent",
-        choices=["auto", "answer_question", "find_resources"],
+        "--search-intent", choices=["auto", "answer_question", "find_resources"],
         default="auto",
     )
     parser.add_argument("--chat-endpoint", default=CHAT_ENDPOINT)
@@ -194,9 +208,13 @@ def main() -> None:
     selected = [
         doc
         for doc in candidates
-        if not args.subject or str(doc.get("subject", "")).casefold() == args.subject.casefold()
+        if not args.subject
+        or str(doc.get("subject", "")).casefold() == args.subject.casefold()
     ]
-    print(f"Checking {len(selected)} candidate(s) after subject filter: {args.subject or 'ALL'}")
+    print(
+        f"Checking {len(selected)} candidate(s) after subject filter: "
+        f"{args.subject or 'ALL'}"
+    )
     accepted = []
     for doc in selected:
         result, explanation = verify_one(
