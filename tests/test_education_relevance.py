@@ -60,9 +60,7 @@ def test_math_exercise_accepted_as_resource():
             "answer_supported": False,
         }
     )
-    result, reason = verify_one(
-        ws, "How do I calculate the hypotenuse?", MATH_DOC, "model", "auto"
-    )
+    result, reason = verify_one(ws, "How do I calculate the hypotenuse?", MATH_DOC, "model", "auto")
     assert reason == "accepted"
     assert result["match_type"] == "EXERCISE_MATCH"
     assert result["answer_supported"] is False
