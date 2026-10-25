@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import re
-from typing import Literal
 import unicodedata
+from typing import Literal
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
