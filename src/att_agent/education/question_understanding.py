@@ -1,4 +1,5 @@
 """Optional LLM normalization of education search questions, with safe fallbacks."""
+
 from __future__ import annotations
 
 import json
@@ -42,9 +43,15 @@ def understand_question(ws, question: str, subject: str, endpoint: str) -> Under
             name=endpoint,
             messages=[
                 ChatMessage(role=ChatMessageRole.SYSTEM, content=instructions),
-                ChatMessage(role=ChatMessageRole.USER, content=json.dumps({
-                    "question": question, "specified_subject": subject,
-                })),
+                ChatMessage(
+                    role=ChatMessageRole.USER,
+                    content=json.dumps(
+                        {
+                            "question": question,
+                            "specified_subject": subject,
+                        }
+                    ),
+                ),
             ],
             temperature=0.0,
             max_tokens=700,

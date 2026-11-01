@@ -144,11 +144,17 @@ def test_retrieve_filters_inside_ann_query():
             return {"manifest": {"columns": []}, "result": {"data_array": []}}
 
     api = API()
-    retrieve(SimpleNamespace(api_client=api), "triangle knowledge", 8,
-             subject="mathematics", content_type="KNOWLEDGE")
+    retrieve(
+        SimpleNamespace(api_client=api),
+        "triangle knowledge",
+        8,
+        subject="mathematics",
+        content_type="KNOWLEDGE",
+    )
     assert api.body["query_type"] == "ANN"
     assert json.loads(api.body["filters_json"]) == {
-        "subject": "mathematics", "content_type": "KNOWLEDGE"
+        "subject": "mathematics",
+        "content_type": "KNOWLEDGE",
     }
 
 
