@@ -130,3 +130,32 @@ def test_verified_search_filters_rejected(monkeypatch):
     result = verified_search(object(), "a question", subject="bible")
     assert result["results"] == [] and result["rejected_count"] == 1
     assert result["search_intent"] == "auto"
+
+
+def test_retrieve_filters_inside_ann_query():
+    from att_agent.education.relevance_verifier import retrieve
+
+    class API:
+        def __init__(self):
+            self.body = None
+
+        def do(self, **kwargs):
+            self.body = kwargs["body"]
+            return {"manifest": {"columns": []}, "result": {"data_array": []}}
+
+    api = API()
+    retrieve(SimpleNamespace(api_client=api), "triangle knowledge", 8,
+             subject="mathematics", content_type="KNOWLEDGE")
+    assert api.body["query_type"] == "ANN"
+    assert json.loads(api.body["filters_json"]) == {
+        "subject": "mathematics", "content_type": "KNOWLEDGE"
+    }
+
+
+def test_knowledge_rejects_exercise_without_calling_model():
+    ws = SimpleNamespace(serving_endpoints=None)
+    result, reason = verify_one(
+        ws, "triangle knowledges", MATH_DOC, "model", requested_content_type="KNOWLEDGE"
+    )
+    assert result is None
+    assert "content type" in reason
