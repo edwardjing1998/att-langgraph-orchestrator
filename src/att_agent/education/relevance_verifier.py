@@ -28,9 +28,7 @@ def explicit_content_type(question: str) -> str:
     has_exercise = bool(
         re.search(r"\b(exercises?|exercisess|practice|practises?|problems?|worksheets?)\b", words)
     )
-    has_knowledge = bool(
-        re.search(r"\b(knowledge|knowledges|explanations?|theory)\b", words)
-    )
+    has_knowledge = bool(re.search(r"\b(knowledge|knowledges|explanations?|theory)\b", words))
     has_example = bool(re.search(r"\b(examples?|worked examples?)\b", words))
     requested = [
         kind

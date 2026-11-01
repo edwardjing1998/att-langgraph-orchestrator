@@ -199,7 +199,11 @@ def test_general_pages_query_does_not_filter_to_knowledge(monkeypatch):
         return ({"search_id": "rect-1"}, "accepted")
 
     monkeypatch.setattr(verifier, "verify_one", verify_stub)
-    result = verified_search(object(), "Can you show me pages related to rectangle?", subject="mathematics")
+    result = verified_search(
+        object(),
+        "Can you show me pages related to rectangle?",
+        subject="mathematics",
+    )
     assert [item["search_id"] for item in result["results"]] == ["rect-1"]
     assert seen == ["ANY", "ANY"]
 
