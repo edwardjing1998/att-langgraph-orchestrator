@@ -21,6 +21,29 @@ SearchIntent = Literal["auto", "answer_question", "find_resources"]
 ALLOWED_MATCH_TYPES = {"ANSWER_SUPPORT", "EXERCISE_MATCH", "RESOURCE_MATCH"}
 
 
+def explicit_content_type(question: str) -> str:
+    """Restrict content type only when the user explicitly requests it."""
+    words = normalize_text(question)
+    # Common misspellings are included so type constraints are preserved for typos.
+    has_exercise = bool(
+        re.search(r"\b(exercises?|exercisess|practice|practises?|problems?|worksheets?)\b", words)
+    )
+    has_knowledge = bool(
+        re.search(r"\b(knowledge|knowledges|explanations?|theory)\b", words)
+    )
+    has_example = bool(re.search(r"\b(examples?|worked examples?)\b", words))
+    requested = [
+        kind
+        for kind, matches in (
+            ("EXERCISE", has_exercise),
+            ("KNOWLEDGE", has_knowledge),
+            ("EXAMPLE", has_example),
+        )
+        if matches
+    ]
+    return requested[0] if len(requested) == 1 else "ANY"
+
+
 def normalize_text(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value)
     return re.sub(r"\s+", " ", normalized).strip().casefold()
@@ -192,7 +215,9 @@ def verified_search(
     )
     normalized_query = understood.normalized_query if understood else question
     effective_subject = understood.subject if understood else subject
-    requested_type = understood.content_type if understood else "ANY"
+    # The model may over-specify KNOWLEDGE for a broad "show me pages" request.
+    # Only the user's explicit words may narrow the content-type constraint.
+    requested_type = explicit_content_type(question)
     # More candidates than the requested output count enables verification to reject noise.
     multiplier = max(1, int(os.getenv("EDUCATION_CANDIDATE_MULTIPLIER", "3")))
     limit = min(100, max(top_k, top_k * multiplier))
@@ -204,38 +229,56 @@ def verified_search(
         subject=effective_subject,
         content_type=requested_type,
     )
-    # If an inferred content-type filter yields nothing, retry without that inferred filter.
-    if not candidates and requested_type != "ANY":
-        candidates = retrieve(
+    # Only fall back to a broader content type for non-explicit requests.
+    # requested_type is derived from the user's explicit wording, so it
+    # remains the same at retrieval AND verification stages.
+    accepted = []
+    rejections = []
+    seen_ids = set()
+
+    def evaluate(documents: list[dict]) -> None:
+        for doc in documents:
+            doc_id = doc.get("search_id")
+            if doc_id in seen_ids:
+                continue
+            seen_ids.add(doc_id)
+            result, reason = verify_one(
+                ws,
+                normalized_query,
+                doc,
+                chat_endpoint,
+                search_intent=search_intent,
+                requested_content_type=requested_type,
+            )
+            if result is not None:
+                accepted.append(result)
+                if len(accepted) >= top_k:
+                    break
+            else:
+                rejections.append({"search_id": doc_id, "reason": reason})
+
+    evaluate(candidates)
+
+    # A normalized query can lower recall compared with the original wording.
+    # If no record passed, try the original query with the SAME user-requested
+    # content-type restriction. In particular, "rectangle" resources should
+    # not disappear merely because the model rewrote the question badly.
+    if not accepted and normalized_query.strip().casefold() != question.strip().casefold():
+        original_candidates = retrieve(
             ws,
-            normalized_query,
+            question,
             limit,
             index=index,
             subject=effective_subject,
-            content_type="ANY",
+            content_type=requested_type,
         )
-    accepted = []
-    rejections = []
-    for doc in candidates:
-        result, reason = verify_one(
-            ws,
-            normalized_query,
-            doc,
-            chat_endpoint,
-            search_intent=search_intent,
-            requested_content_type=requested_type,
-        )
-        if result is not None:
-            accepted.append(result)
-            if len(accepted) >= top_k:
-                break
-        else:
-            rejections.append({"search_id": doc.get("search_id"), "reason": reason})
+        evaluate(original_candidates)
+
     return {
         "question": question,
         "subject": subject or None,
         "search_intent": search_intent,
-        "candidate_count": len(candidates),
+        "candidate_count": len(seen_ids),
         "normalized_query": normalized_query,
         "results": accepted,
         "rejected_count": len(rejections),

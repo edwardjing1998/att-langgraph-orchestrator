@@ -165,3 +165,82 @@ def test_knowledge_rejects_exercise_without_calling_model():
     )
     assert result is None
     assert "content type" in reason
+
+
+def test_general_pages_query_does_not_filter_to_knowledge(monkeypatch):
+    from att_agent.education import relevance_verifier as verifier
+    from att_agent.education.question_understanding import UnderstoodQuestion
+
+    seen = []
+    rectangle = {
+        "search_id": "rect-1",
+        "title": "Rectangle Card Sort Activity",
+        "subject": "mathematics",
+        "content_type": "EXERCISE",
+        "searchable_text": "Sort the rectangle cards into categories.",
+    }
+
+    monkeypatch.setattr(
+        verifier,
+        "understand_question",
+        lambda *args: UnderstoodQuestion(
+            "Find mathematics knowledge about rectangles", "mathematics", "KNOWLEDGE"
+        ),
+    )
+
+    def retrieve_stub(*args, **kwargs):
+        seen.append(kwargs["content_type"])
+        return [rectangle]
+
+    monkeypatch.setattr(verifier, "retrieve", retrieve_stub)
+
+    def verify_stub(*args, **kwargs):
+        seen.append(kwargs["requested_content_type"])
+        return ({"search_id": "rect-1"}, "accepted")
+
+    monkeypatch.setattr(verifier, "verify_one", verify_stub)
+    result = verified_search(object(), "Can you show me pages related to rectangle?", subject="mathematics")
+    assert [item["search_id"] for item in result["results"]] == ["rect-1"]
+    assert seen == ["ANY", "ANY"]
+
+
+def test_explicit_exercises_stay_filtered(monkeypatch):
+    from att_agent.education import relevance_verifier as verifier
+
+    seen = []
+
+    def retrieve_stub(*args, **kwargs):
+        seen.append(kwargs["content_type"])
+        return []
+
+    monkeypatch.setenv("EDUCATION_QUERY_NORMALIZATION_ENABLED", "false")
+    monkeypatch.setattr(verifier, "retrieve", retrieve_stub)
+    result = verified_search(object(), "Find rectangle exercisess", subject="mathematics")
+    assert result["results"] == []
+    assert seen == ["EXERCISE"]
+
+
+def test_original_query_retry_recovers_rectangle(monkeypatch):
+    from att_agent.education import relevance_verifier as verifier
+    from att_agent.education.question_understanding import UnderstoodQuestion
+
+    monkeypatch.setattr(
+        verifier,
+        "understand_question",
+        lambda *args: UnderstoodQuestion("Unhelpful rewrite", "mathematics", "ANY"),
+    )
+    called_queries = []
+
+    def retrieve_stub(_ws, question, *args, **kwargs):
+        called_queries.append(question)
+        if question == "Unhelpful rewrite":
+            return []
+        return [{"search_id": "rect-1", "title": "Rectangle Card Sort Activity"}]
+
+    monkeypatch.setattr(verifier, "retrieve", retrieve_stub)
+    monkeypatch.setattr(
+        verifier, "verify_one", lambda *args, **kwargs: ({"search_id": "rect-1"}, "accepted")
+    )
+    results = verified_search(object(), "pages related to rectangle", subject="mathematics")
+    assert [item["search_id"] for item in results["results"]] == ["rect-1"]
+    assert called_queries == ["Unhelpful rewrite", "pages related to rectangle"]
