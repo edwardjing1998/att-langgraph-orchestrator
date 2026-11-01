@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import argparse
-import logging
 import json
+import logging
 import os
 import re
 import unicodedata
@@ -17,6 +17,7 @@ from att_agent.education.image_resolver import resolve_document_images
 from att_agent.education.question_understanding import understand_question
 
 LOGGER = logging.getLogger(__name__)
+
 INDEX = "education_rag.gold.approved_content_index"
 CHAT_ENDPOINT = "databricks-gpt-oss-120b"
 SearchIntent = Literal["auto", "answer_question", "find_resources"]
@@ -30,9 +31,7 @@ def explicit_content_type(question: str) -> str:
     has_exercise = bool(
         re.search(r"\b(exercises?|exercisess|practice|practises?|problems?|worksheets?)\b", words)
     )
-    has_knowledge = bool(
-        re.search(r"\b(knowledge|knowledges|explanations?|theory)\b", words)
-    )
+    has_knowledge = bool(re.search(r"\b(knowledge|knowledges|explanations?|theory)\b", words))
     has_example = bool(re.search(r"\b(examples?|worked examples?)\b", words))
     requested = [
         kind
@@ -85,8 +84,11 @@ def browse_by_content_type(
             "Category browsing requires EDUCATION_APPROVED_SOURCE_TABLE "
             "and EDUCATION_SQL_WAREHOUSE_ID"
         )
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\."
-                        r"[A-Za-z_][A-Za-z0-9_]*", table):
+    if not re.fullmatch(
+        r"[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\."
+        r"[A-Za-z_][A-Za-z0-9_]*",
+        table,
+    ):
         raise ValueError("Invalid approved source table identifier")
     if content_type not in {"KNOWLEDGE", "EXERCISE", "EXAMPLE"}:
         raise ValueError("Invalid content type")
@@ -317,9 +319,7 @@ def verified_search(
     requested_type = explicit_content_type(question)
     # Category-only resource requests are listings, not similarity questions.
     # Keep answer_question mode evidence-grounded with the original verifier.
-    if search_intent in ("auto", "find_resources") and is_category_browse(
-        question, requested_type
-    ):
+    if search_intent in ("auto", "find_resources") and is_category_browse(question, requested_type):
         rows = browse_by_content_type(ws, effective_subject, requested_type, top_k)
         records = [format_browse_result(row) for row in rows]
         return {
