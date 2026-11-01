@@ -288,8 +288,10 @@ def test_knowledge_browse_skips_vector_search_and_model(monkeypatch):
         ],
     )
     result = verifier.verified_search(
-        object(), "Can you show me all the pages related to knowledge?",
-        subject="mathematics", search_intent="find_resources",
+        object(),
+        "Can you show me all the pages related to knowledge?",
+        subject="mathematics",
+        search_intent="find_resources",
     )
     assert [doc["search_id"] for doc in result["results"]] == ["tri-1"]
     assert result["results"][0]["content_type"] == "KNOWLEDGE"
@@ -309,16 +311,14 @@ def test_browse_sql_uses_metadata_and_parameters(monkeypatch):
             self.body = kwargs["body"]
             return {
                 "status": {"state": "SUCCEEDED"},
-                "manifest": {"schema": {"columns": [
-                    {"name": "search_id"}, {"name": "content_type"}
-                ]}},
+                "manifest": {
+                    "schema": {"columns": [{"name": "search_id"}, {"name": "content_type"}]}
+                },
                 "result": {"data_array": [["tri-1", "KNOWLEDGE"]]},
             }
 
     api = API()
-    result = browse_by_content_type(
-        SimpleNamespace(api_client=api), "mathematics", "KNOWLEDGE", 5
-    )
+    result = browse_by_content_type(SimpleNamespace(api_client=api), "mathematics", "KNOWLEDGE", 5)
     assert result == [{"search_id": "tri-1", "content_type": "KNOWLEDGE"}]
     assert "content_type = :kind" in api.body["statement"]
     assert any(p["value"] == "KNOWLEDGE" for p in api.body["parameters"])
