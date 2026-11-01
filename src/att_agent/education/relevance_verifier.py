@@ -50,8 +50,14 @@ def retrieve(
     body = {
         "query_text": question,
         "query_type": "ANN",
-        "columns": ["search_id", "subject", "content_type", "title",
-                    "searchable_text", "image_links_json"],
+        "columns": [
+            "search_id",
+            "subject",
+            "content_type",
+            "title",
+            "searchable_text",
+            "image_links_json",
+        ],
         "num_results": top_k,
     }
     if filters:
@@ -148,7 +154,7 @@ def verify_one(
         return None, "passage does not contain sufficient answer evidence"
     evidence = decision.get("evidence")
     if not evidence_matches(evidence, passage):
-        return None, (f"evidence not found in source after whitespace normalization: {evidence!r}")
+        return None, f"evidence not found in source after whitespace normalization: {evidence!r}"
     return {
         "search_id": doc.get("search_id"),
         "subject": doc.get("subject"),
@@ -176,11 +182,13 @@ def verified_search(
     if search_intent not in ("auto", "answer_question", "find_resources"):
         raise ValueError(f"Unsupported search_intent: {search_intent}")
     use_normalization = os.getenv("EDUCATION_QUERY_NORMALIZATION_ENABLED", "true").lower() in (
-        "1", "true", "yes", "on"
+        "1",
+        "true",
+        "yes",
+        "on",
     )
     understood = (
-        understand_question(ws, question, subject, chat_endpoint)
-        if use_normalization else None
+        understand_question(ws, question, subject, chat_endpoint) if use_normalization else None
     )
     normalized_query = understood.normalized_query if understood else question
     effective_subject = understood.subject if understood else subject
@@ -189,18 +197,32 @@ def verified_search(
     multiplier = max(1, int(os.getenv("EDUCATION_CANDIDATE_MULTIPLIER", "3")))
     limit = min(100, max(top_k, top_k * multiplier))
     candidates = retrieve(
-        ws, normalized_query, limit, index=index,
-        subject=effective_subject, content_type=requested_type,
+        ws,
+        normalized_query,
+        limit,
+        index=index,
+        subject=effective_subject,
+        content_type=requested_type,
     )
     # If an inferred content-type filter yields nothing, retry without that inferred filter.
     if not candidates and requested_type != "ANY":
-        candidates = retrieve(ws, normalized_query, limit, index=index,
-                              subject=effective_subject, content_type="ANY")
+        candidates = retrieve(
+            ws,
+            normalized_query,
+            limit,
+            index=index,
+            subject=effective_subject,
+            content_type="ANY",
+        )
     accepted = []
     rejections = []
     for doc in candidates:
         result, reason = verify_one(
-            ws, normalized_query, doc, chat_endpoint, search_intent=search_intent,
+            ws,
+            normalized_query,
+            doc,
+            chat_endpoint,
+            search_intent=search_intent,
             requested_content_type=requested_type,
         )
         if result is not None:
