@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import json
 import os
 import re
@@ -15,6 +16,7 @@ from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
 from att_agent.education.image_resolver import resolve_document_images
 from att_agent.education.question_understanding import understand_question
 
+LOGGER = logging.getLogger(__name__)
 INDEX = "education_rag.gold.approved_content_index"
 CHAT_ENDPOINT = "databricks-gpt-oss-120b"
 SearchIntent = Literal["auto", "answer_question", "find_resources"]
@@ -28,7 +30,9 @@ def explicit_content_type(question: str) -> str:
     has_exercise = bool(
         re.search(r"\b(exercises?|exercisess|practice|practises?|problems?|worksheets?)\b", words)
     )
-    has_knowledge = bool(re.search(r"\b(knowledge|knowledges|explanations?|theory)\b", words))
+    has_knowledge = bool(
+        re.search(r"\b(knowledge|knowledges|explanations?|theory)\b", words)
+    )
     has_example = bool(re.search(r"\b(examples?|worked examples?)\b", words))
     requested = [
         kind
@@ -40,6 +44,101 @@ def explicit_content_type(question: str) -> str:
         if matches
     ]
     return requested[0] if len(requested) == 1 else "ANY"
+
+
+def is_category_browse(question: str, content_type: str) -> bool:
+    """Identify requests for a category, with no separate learning topic."""
+    if content_type not in {"KNOWLEDGE", "EXERCISE", "EXAMPLE"}:
+        return False
+    text = normalize_text(question)
+    text = re.sub(
+        r"\b(can you|could you|would you|please|show me|find|list|display|give me|"
+        r"i want|in the system|all|the|pages?|records?|resources?|materials?|"
+        r"content|related to|about|of|for|any|are there|do you have)\b",
+        " ",
+        text,
+    )
+    text = re.sub(
+        r"\b(knowledge|knowledges|exercises?|exercisess|practice|practises?|"
+        r"problems?|worksheets?|examples?|worked examples?)\b",
+        " ",
+        text,
+    )
+    return not text.strip(" ?!.,:;\t\n")
+
+
+def browse_by_content_type(
+    ws: WorkspaceClient,
+    subject: str,
+    content_type: str,
+    limit: int,
+) -> list[dict]:
+    """Read categorized approved records directly from a configured Delta source.
+
+    This requires a Databricks SQL warehouse and a Delta table with the same
+    approved search columns. It intentionally does not guess the index's source.
+    """
+    table = os.getenv("EDUCATION_APPROVED_SOURCE_TABLE", "").strip()
+    warehouse = os.getenv("EDUCATION_SQL_WAREHOUSE_ID", "").strip()
+    if not table or not warehouse:
+        raise RuntimeError(
+            "Category browsing requires EDUCATION_APPROVED_SOURCE_TABLE "
+            "and EDUCATION_SQL_WAREHOUSE_ID"
+        )
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\."
+                        r"[A-Za-z_][A-Za-z0-9_]*", table):
+        raise ValueError("Invalid approved source table identifier")
+    if content_type not in {"KNOWLEDGE", "EXERCISE", "EXAMPLE"}:
+        raise ValueError("Invalid content type")
+    if not 1 <= limit <= 30:
+        raise ValueError("Invalid browse limit")
+
+    # The table identifier is strictly validated, and user values are bound.
+    statement = (
+        "SELECT search_id, subject, content_type, title, "
+        "searchable_text, image_links_json "
+        f"FROM {table} WHERE content_type = :kind "
+        "AND (:subject = '' OR subject = :subject) "
+        "ORDER BY title, search_id LIMIT :max_results"
+    )
+    response = ws.api_client.do(
+        method="POST",
+        path="/api/2.0/sql/statements/",
+        body={
+            "warehouse_id": warehouse,
+            "statement": statement,
+            "wait_timeout": "30s",
+            "disposition": "INLINE",
+            "format": "JSON_ARRAY",
+            "parameters": [
+                {"name": "kind", "value": content_type, "type": "STRING"},
+                {"name": "subject", "value": subject, "type": "STRING"},
+                {"name": "max_results", "value": str(limit), "type": "INT"},
+            ],
+        },
+    )
+    status = response.get("status", {})
+    if status.get("state") != "SUCCEEDED":
+        raise RuntimeError(f"Category browse SQL did not complete: {status.get('state')}")
+    names = [col["name"] for col in response["manifest"]["schema"]["columns"]]
+    rows = response.get("result", {}).get("data_array", [])
+    return [dict(zip(names, row, strict=True)) for row in rows]
+
+
+def format_browse_result(doc: dict) -> dict:
+    """Keep the same record shape as evidence-verified resources."""
+    return {
+        "search_id": doc.get("search_id"),
+        "subject": doc.get("subject"),
+        "title": doc.get("title"),
+        "content_type": doc.get("content_type"),
+        "match_type": "RESOURCE_MATCH",
+        "answer_supported": False,
+        "search_score": None,
+        "evidence": "",
+        "reason": "Matched the requested content category",
+        "images": resolve_document_images(doc),
+    }
 
 
 def normalize_text(value: str) -> str:
@@ -216,6 +315,23 @@ def verified_search(
     # The model may over-specify KNOWLEDGE for a broad "show me pages" request.
     # Only the user's explicit words may narrow the content-type constraint.
     requested_type = explicit_content_type(question)
+    # Category-only resource requests are listings, not similarity questions.
+    # Keep answer_question mode evidence-grounded with the original verifier.
+    if search_intent in ("auto", "find_resources") and is_category_browse(
+        question, requested_type
+    ):
+        rows = browse_by_content_type(ws, effective_subject, requested_type, top_k)
+        records = [format_browse_result(row) for row in rows]
+        return {
+            "question": question,
+            "subject": subject or None,
+            "search_intent": search_intent,
+            "candidate_count": len(records),
+            "normalized_query": normalized_query,
+            "results": records,
+            "rejected_count": 0,
+        }
+
     # More candidates than the requested output count enables verification to reject noise.
     multiplier = max(1, int(os.getenv("EDUCATION_CANDIDATE_MULTIPLIER", "3")))
     limit = min(100, max(top_k, top_k * multiplier))

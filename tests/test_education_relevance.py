@@ -200,9 +200,7 @@ def test_general_pages_query_does_not_filter_to_knowledge(monkeypatch):
 
     monkeypatch.setattr(verifier, "verify_one", verify_stub)
     result = verified_search(
-        object(),
-        "Can you show me pages related to rectangle?",
-        subject="mathematics",
+        object(), "Can you show me pages related to rectangle?", subject="mathematics"
     )
     assert [item["search_id"] for item in result["results"]] == ["rect-1"]
     assert seen == ["ANY", "ANY"]
@@ -248,3 +246,79 @@ def test_original_query_retry_recovers_rectangle(monkeypatch):
     results = verified_search(object(), "pages related to rectangle", subject="mathematics")
     assert [item["search_id"] for item in results["results"]] == ["rect-1"]
     assert called_queries == ["Unhelpful rewrite", "pages related to rectangle"]
+
+
+def test_category_browse_detection():
+    from att_agent.education.relevance_verifier import is_category_browse
+
+    assert is_category_browse("Can you show me all the pages related to knowledge?", "KNOWLEDGE")
+    assert is_category_browse("Show me all exercises", "EXERCISE")
+    assert is_category_browse("show me all the exercisess pages", "EXERCISE")
+    assert not is_category_browse("show me knowledge about triangles", "KNOWLEDGE")
+    assert not is_category_browse("show me rectangle exercises", "EXERCISE")
+    assert not is_category_browse("show me rectangle pages", "ANY")
+
+
+def test_knowledge_browse_skips_vector_search_and_model(monkeypatch):
+    from att_agent.education import relevance_verifier as verifier
+
+    monkeypatch.setenv("EDUCATION_QUERY_NORMALIZATION_ENABLED", "false")
+    monkeypatch.setattr(
+        verifier,
+        "retrieve",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("ANN should not run")),
+    )
+    monkeypatch.setattr(
+        verifier,
+        "verify_one",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("LLM should not run")),
+    )
+    monkeypatch.setattr(
+        verifier,
+        "browse_by_content_type",
+        lambda ws, subject, content_type, limit: [
+            {
+                "search_id": "tri-1",
+                "subject": "mathematics",
+                "title": "Classifying Triangles by Sides",
+                "content_type": "KNOWLEDGE",
+                "searchable_text": "Triangles have three sides",
+                "image_links_json": "[]",
+            }
+        ],
+    )
+    result = verifier.verified_search(
+        object(), "Can you show me all the pages related to knowledge?",
+        subject="mathematics", search_intent="find_resources",
+    )
+    assert [doc["search_id"] for doc in result["results"]] == ["tri-1"]
+    assert result["results"][0]["content_type"] == "KNOWLEDGE"
+
+
+def test_browse_sql_uses_metadata_and_parameters(monkeypatch):
+    from att_agent.education.relevance_verifier import browse_by_content_type
+
+    monkeypatch.setenv("EDUCATION_APPROVED_SOURCE_TABLE", "education_rag.gold.approved_source")
+    monkeypatch.setenv("EDUCATION_SQL_WAREHOUSE_ID", "test-warehouse")
+
+    class API:
+        def __init__(self):
+            self.body = None
+
+        def do(self, **kwargs):
+            self.body = kwargs["body"]
+            return {
+                "status": {"state": "SUCCEEDED"},
+                "manifest": {"schema": {"columns": [
+                    {"name": "search_id"}, {"name": "content_type"}
+                ]}},
+                "result": {"data_array": [["tri-1", "KNOWLEDGE"]]},
+            }
+
+    api = API()
+    result = browse_by_content_type(
+        SimpleNamespace(api_client=api), "mathematics", "KNOWLEDGE", 5
+    )
+    assert result == [{"search_id": "tri-1", "content_type": "KNOWLEDGE"}]
+    assert "content_type = :kind" in api.body["statement"]
+    assert any(p["value"] == "KNOWLEDGE" for p in api.body["parameters"])
