@@ -75,9 +75,11 @@ def verify_one(
     search_intent: SearchIntent = "auto",
     requested_content_type: str = "ANY",
 ) -> tuple[dict | None, str]:
-    if requested_content_type in ("KNOWLEDGE", "EXERCISE", "EXAMPLE"):
-        if str(doc.get("content_type", "")).upper() != requested_content_type:
-            return None, "content type does not match requested type"
+    if (
+        requested_content_type in ("KNOWLEDGE", "EXERCISE", "EXAMPLE")
+        and str(doc.get("content_type", "")).upper() != requested_content_type
+    ):
+        return None, "content type does not match requested type"
     passage = str(doc.get("searchable_text") or "")
     if not passage.strip():
         return None, "empty searchable_text"

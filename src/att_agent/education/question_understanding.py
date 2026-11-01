@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass
 
 from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
@@ -73,6 +72,9 @@ def understand_question(ws, question: str, subject: str, endpoint: str) -> Under
             grade=grade,
             topic=topic[:200],
         )
-    except (Exception) as exc:
-        LOGGER.warning("Question normalization failed; using original query: %s", type(exc).__name__)
+    except Exception as exc:
+        LOGGER.warning(
+            "Question normalization failed; using original query: %s",
+            type(exc).__name__,
+        )
         return fallback
