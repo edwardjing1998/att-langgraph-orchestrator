@@ -205,34 +205,38 @@ jobs:
           echo "OpenShift client and server versions:"
           oc version
 
-      # The staging environment stores the two Education OAuth credentials.
-      # Create/update the corresponding OpenShift Secret before deploying.
+      # Read one JSON GitHub Environment Secret containing both OAuth fields.
       - name: Create or update Education Databricks Secret
         shell: bash
         env:
-          EDUCATION_CLIENT_ID: ${{ secrets.EDUCATION_DATABRICKS_CLIENT_ID }}
-          EDUCATION_CLIENT_SECRET: ${{ secrets.EDUCATION_DATABRICKS_CLIENT_SECRET }}
+          EDUCATION_DATABRICKS_AUTH: ${{ secrets.EDUCATION_DATABRICKS_AUTH }}
         run: |
           set -euo pipefail
 
-          if [[ -z "${EDUCATION_CLIENT_ID:-}" || -z "${EDUCATION_CLIENT_SECRET:-}" ]]; then
-            echo "Missing staging environment secrets: EDUCATION_DATABRICKS_CLIENT_ID and/or EDUCATION_DATABRICKS_CLIENT_SECRET"
+          if [[ -z "${EDUCATION_DATABRICKS_AUTH:-}" ]]; then
+            echo "Missing staging environment secret: EDUCATION_DATABRICKS_AUTH"
             exit 1
           fi
 
           SECRET_DIR="$(mktemp -d)"
           chmod 700 "$SECRET_DIR"
           trap 'rm -rf "$SECRET_DIR"' EXIT
+          umask 077
 
-          printf '%s' "$EDUCATION_CLIENT_ID" > "$SECRET_DIR/client-id"
-          printf '%s' "$EDUCATION_CLIENT_SECRET" > "$SECRET_DIR/client-secret"
-          chmod 600 "$SECRET_DIR/client-id" "$SECRET_DIR/client-secret"
+          # -j avoids appending a newline to secret values.
+          printf '%s' "$EDUCATION_DATABRICKS_AUTH" |
+            jq -ej '."client-id" | select(type == "string" and length > 0)' \
+              > "$SECRET_DIR/client-id"
+          printf '%s' "$EDUCATION_DATABRICKS_AUTH" |
+            jq -ej '."client-secret" | select(type == "string" and length > 0)' \
+              > "$SECRET_DIR/client-secret"
 
           oc create secret generic education-databricks-auth \
             --from-file=client-id="$SECRET_DIR/client-id" \
             --from-file=client-secret="$SECRET_DIR/client-secret" \
             -n "$OPENSHIFT_NAMESPACE" \
-            --dry-run=client -o yaml | oc apply -n "$OPENSHIFT_NAMESPACE" -f -
+            --dry-run=client -o yaml |
+            oc apply -n "$OPENSHIFT_NAMESPACE" -f -
 
           CLIENT_ID_PRESENT="$(oc get secret education-databricks-auth \
             -n "$OPENSHIFT_NAMESPACE" \
