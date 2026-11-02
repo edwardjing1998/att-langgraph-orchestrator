@@ -205,40 +205,46 @@ jobs:
           echo "OpenShift client and server versions:"
           oc version
 
-      # NEW: Make sure the Education OAuth Secret exists
-      # before applying the Deployment.
-      - name: Validate Education Databricks Secret
+      # The staging environment stores the two Education OAuth credentials.
+      # Create/update the corresponding OpenShift Secret before deploying.
+      - name: Create or update Education Databricks Secret
         shell: bash
+        env:
+          EDUCATION_CLIENT_ID: ${{ secrets.EDUCATION_DATABRICKS_CLIENT_ID }}
+          EDUCATION_CLIENT_SECRET: ${{ secrets.EDUCATION_DATABRICKS_CLIENT_SECRET }}
         run: |
           set -euo pipefail
 
-          SECRET_NAME="education-databricks-auth"
-
-          oc get secret "$SECRET_NAME" \
-            -n "$OPENSHIFT_NAMESPACE" \
-            >/dev/null
-
-          echo "Education Databricks Secret exists."
-
-          CLIENT_ID_PRESENT="$(
-            oc get secret "$SECRET_NAME" \
-              -n "$OPENSHIFT_NAMESPACE" \
-              -o go-template='{{if index .data "client-id"}}yes{{else}}no{{end}}'
-          )"
-
-          CLIENT_SECRET_PRESENT="$(
-            oc get secret "$SECRET_NAME" \
-              -n "$OPENSHIFT_NAMESPACE" \
-              -o go-template='{{if index .data "client-secret"}}yes{{else}}no{{end}}'
-          )"
-
-          if [ "$CLIENT_ID_PRESENT" != "yes" ] || \
-             [ "$CLIENT_SECRET_PRESENT" != "yes" ]; then
-            echo "Education Secret is missing OAuth credentials."
+          if [[ -z "${EDUCATION_CLIENT_ID:-}" || -z "${EDUCATION_CLIENT_SECRET:-}" ]]; then
+            echo "Missing staging environment secrets: EDUCATION_DATABRICKS_CLIENT_ID and/or EDUCATION_DATABRICKS_CLIENT_SECRET"
             exit 1
           fi
 
-          echo "Education OAuth credential keys are present."
+          SECRET_DIR="$(mktemp -d)"
+          chmod 700 "$SECRET_DIR"
+          trap 'rm -rf "$SECRET_DIR"' EXIT
+
+          printf '%s' "$EDUCATION_CLIENT_ID" > "$SECRET_DIR/client-id"
+          printf '%s' "$EDUCATION_CLIENT_SECRET" > "$SECRET_DIR/client-secret"
+          chmod 600 "$SECRET_DIR/client-id" "$SECRET_DIR/client-secret"
+
+          oc create secret generic education-databricks-auth \
+            --from-file=client-id="$SECRET_DIR/client-id" \
+            --from-file=client-secret="$SECRET_DIR/client-secret" \
+            -n "$OPENSHIFT_NAMESPACE" \
+            --dry-run=client -o yaml | oc apply -n "$OPENSHIFT_NAMESPACE" -f -
+
+          CLIENT_ID_PRESENT="$(oc get secret education-databricks-auth \
+            -n "$OPENSHIFT_NAMESPACE" \
+            -o go-template='{{if index .data "client-id"}}yes{{else}}no{{end}}')"
+          CLIENT_SECRET_PRESENT="$(oc get secret education-databricks-auth \
+            -n "$OPENSHIFT_NAMESPACE" \
+            -o go-template='{{if index .data "client-secret"}}yes{{else}}no{{end}}')"
+          if [[ "$CLIENT_ID_PRESENT" != "yes" || "$CLIENT_SECRET_PRESENT" != "yes" ]]; then
+            echo "Education Databricks Secret is missing OAuth keys."
+            exit 1
+          fi
+          echo "Education Databricks Secret is configured with both required keys."
 
       - name: Create or update runtime secrets
         shell: bash
