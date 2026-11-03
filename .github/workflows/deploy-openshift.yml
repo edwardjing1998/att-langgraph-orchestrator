@@ -34,6 +34,8 @@ jobs:
       DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
       SNOWFLAKE_PAT: ${{ secrets.SNOWFLAKE_PAT }}
       APP_API_KEY: ${{ secrets.APP_API_KEY }}
+      EDUCATION_DATABRICKS_CLIENT_ID: ${{ secrets.EDUCATION_DATABRICKS_CLIENT_ID }}
+      EDUCATION_DATABRICKS_CLIENT_SECRET: ${{ secrets.EDUCATION_DATABRICKS_CLIENT_SECRET }}
 
       # Existing Databricks workspace (unchanged)
       DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
@@ -140,6 +142,8 @@ jobs:
             OPENSHIFT_NAMESPACE
             DATABRICKS_TOKEN
             SNOWFLAKE_PAT
+            EDUCATION_DATABRICKS_CLIENT_ID
+            EDUCATION_DATABRICKS_CLIENT_SECRET
             DATABRICKS_HOST
             DATABRICKS_POLICY_INDEX
             DATABRICKS_BILLING_INDEX
@@ -164,6 +168,8 @@ jobs:
           echo "::add-mask::$OPENSHIFT_TOKEN"
           echo "::add-mask::$DATABRICKS_TOKEN"
           echo "::add-mask::$SNOWFLAKE_PAT"
+          echo "::add-mask::$EDUCATION_DATABRICKS_CLIENT_ID"
+          echo "::add-mask::$EDUCATION_DATABRICKS_CLIENT_SECRET"
 
           if [ -n "${APP_API_KEY:-}" ]; then
             echo "::add-mask::$APP_API_KEY"
@@ -205,67 +211,35 @@ jobs:
           echo "OpenShift client and server versions:"
           oc version
 
-      # Read one JSON GitHub Environment Secret containing both OAuth fields.
-      - name: Create or update Education Databricks Secret
+      # Reuse the existing application runtime Secret for both Databricks hosts.
+      # These values are supplied from GitHub Actions repository secrets.
+      - name: Create or update runtime secrets
         shell: bash
-        env:
-          EDUCATION_DATABRICKS_AUTH: ${{ secrets.EDUCATION_DATABRICKS_AUTH }}
         run: |
           set -euo pipefail
-
-          if [[ -z "${EDUCATION_DATABRICKS_AUTH:-}" ]]; then
-            echo "Missing staging environment secret: EDUCATION_DATABRICKS_AUTH"
-            exit 1
-          fi
 
           SECRET_DIR="$(mktemp -d)"
           chmod 700 "$SECRET_DIR"
           trap 'rm -rf "$SECRET_DIR"' EXIT
           umask 077
 
-          # -j avoids appending a newline to secret values.
-          printf '%s' "$EDUCATION_DATABRICKS_AUTH" |
-            jq -ej '."client-id" | select(type == "string" and length > 0)' \
-              > "$SECRET_DIR/client-id"
-          printf '%s' "$EDUCATION_DATABRICKS_AUTH" |
-            jq -ej '."client-secret" | select(type == "string" and length > 0)' \
-              > "$SECRET_DIR/client-secret"
+          # Files avoid placing secret values in the oc command arguments.
+          printf '%s' "$DATABRICKS_TOKEN" > "$SECRET_DIR/DATABRICKS_TOKEN"
+          printf '%s' "$SNOWFLAKE_PAT" > "$SECRET_DIR/SNOWFLAKE_PAT"
+          printf '%s' "${APP_API_KEY:-}" > "$SECRET_DIR/APP_API_KEY"
+          printf '%s' "$EDUCATION_DATABRICKS_CLIENT_ID" > "$SECRET_DIR/EDUCATION_DATABRICKS_CLIENT_ID"
+          printf '%s' "$EDUCATION_DATABRICKS_CLIENT_SECRET" > "$SECRET_DIR/EDUCATION_DATABRICKS_CLIENT_SECRET"
 
-          oc create secret generic education-databricks-auth \
-            --from-file=client-id="$SECRET_DIR/client-id" \
-            --from-file=client-secret="$SECRET_DIR/client-secret" \
-            -n "$OPENSHIFT_NAMESPACE" \
-            --dry-run=client -o yaml |
-            oc apply -n "$OPENSHIFT_NAMESPACE" -f -
-
-          CLIENT_ID_PRESENT="$(oc get secret education-databricks-auth \
-            -n "$OPENSHIFT_NAMESPACE" \
-            -o go-template='{{if index .data "client-id"}}yes{{else}}no{{end}}')"
-          CLIENT_SECRET_PRESENT="$(oc get secret education-databricks-auth \
-            -n "$OPENSHIFT_NAMESPACE" \
-            -o go-template='{{if index .data "client-secret"}}yes{{else}}no{{end}}')"
-          if [[ "$CLIENT_ID_PRESENT" != "yes" || "$CLIENT_SECRET_PRESENT" != "yes" ]]; then
-            echo "Education Databricks Secret is missing OAuth keys."
-            exit 1
-          fi
-          echo "Education Databricks Secret is configured with both required keys."
-
-      - name: Create or update runtime secrets
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # Existing application credentials remain unchanged.
-          # Education credentials are managed in a separate Secret.
           oc create secret generic att-langgraph-orchestrator-secrets \
-            --from-literal=DATABRICKS_TOKEN="$DATABRICKS_TOKEN" \
-            --from-literal=SNOWFLAKE_PAT="$SNOWFLAKE_PAT" \
-            --from-literal=APP_API_KEY="${APP_API_KEY:-}" \
-            --dry-run=client \
-            --output=yaml |
-          oc apply -f -
+            --from-file=DATABRICKS_TOKEN="$SECRET_DIR/DATABRICKS_TOKEN" \
+            --from-file=SNOWFLAKE_PAT="$SECRET_DIR/SNOWFLAKE_PAT" \
+            --from-file=APP_API_KEY="$SECRET_DIR/APP_API_KEY" \
+            --from-file=EDUCATION_DATABRICKS_CLIENT_ID="$SECRET_DIR/EDUCATION_DATABRICKS_CLIENT_ID" \
+            --from-file=EDUCATION_DATABRICKS_CLIENT_SECRET="$SECRET_DIR/EDUCATION_DATABRICKS_CLIENT_SECRET" \
+            -n "$OPENSHIFT_NAMESPACE" \
+            --dry-run=client --output=yaml | oc apply -n "$OPENSHIFT_NAMESPACE" -f -
 
-          echo "Existing runtime Secret created or updated."
+          echo "Runtime Secret created or updated for both Databricks workspaces."
 
       - name: Apply OpenShift build resources
         shell: bash
@@ -302,7 +276,7 @@ jobs:
           envsubst < openshift/configmap.yaml |
           oc apply -f -
 
-          # Apply Deployment referencing both credential Secrets.
+          # Apply Deployment referencing the shared runtime Secret.
           envsubst < openshift/deployment.yaml |
           oc apply -f -
 
