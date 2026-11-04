@@ -394,6 +394,14 @@ def test_related_suggestions_deduplicates_and_limits(monkeypatch):
 
     monkeypatch.setattr(verifier, "assess_related_resource", stub)
     documents = [dict(MATH_DOC, search_id=i) for i in ("a", "a", "b", "c")]
-    result = verifier.related_suggestions(object(), "question", documents, "endpoint", "", "ANY", 10)
+    result = verifier.related_suggestions(
+        object(),
+        "question",
+        documents,
+        "endpoint",
+        "",
+        "ANY",
+        10,
+    )
     assert [item["search_id"] for item in result] == ["a", "b"]
     assert checked == ["a", "b"]

@@ -305,9 +305,11 @@ def assess_related_resource(
     check is required before a suggestion is returned. The original type and
     subject constraints still apply. An invalid response fails closed.
     """
-    if requested_content_type in {"KNOWLEDGE", "EXERCISE", "EXAMPLE"}:
-        if str(doc.get("content_type") or "").upper() != requested_content_type:
-            return None
+    if (
+            requested_content_type in {"KNOWLEDGE", "EXERCISE", "EXAMPLE"}
+            and str(doc.get("content_type") or "").upper() != requested_content_type
+    ):
+        return None
     if subject and normalize_text(str(doc.get("subject") or "")) != normalize_text(subject):
         return None
     if not doc.get("search_id") or not str(doc.get("searchable_text") or "").strip():
