@@ -333,7 +333,9 @@ def test_related_results_when_strict_verification_rejects(monkeypatch):
     monkeypatch.setattr(verifier, "verify_one", lambda *args, **kwargs: (None, "no answer"))
     ws = fake_workspace({"related": True, "reason": "An exercise in the requested category"})
     response = verifier.verified_search(
-        ws, "Show me lessons related to exercise?", subject="mathematics",
+        ws,
+        "Show me lessons related to exercise?",
+        subject="mathematics",
         search_intent="find_resources",
     )
     assert response["results"] == []
@@ -347,14 +349,28 @@ def test_related_results_reject_wrong_subject_and_content_type():
     from att_agent.education.relevance_verifier import assess_related_resource
 
     ws = fake_workspace({"related": True, "reason": "maybe related"})
-    assert assess_related_resource(
-        ws, "Find exercises", BIBLE_DOC, "endpoint",
-        subject="mathematics", requested_content_type="EXERCISE",
-    ) is None
-    assert assess_related_resource(
-        ws, "Find exercises", MATH_DOC, "endpoint",
-        subject="mathematics", requested_content_type="KNOWLEDGE",
-    ) is None
+    assert (
+        assess_related_resource(
+            ws,
+            "Find exercises",
+            BIBLE_DOC,
+            "endpoint",
+            subject="mathematics",
+            requested_content_type="EXERCISE",
+        )
+        is None
+    )
+    assert (
+        assess_related_resource(
+            ws,
+            "Find exercises",
+            MATH_DOC,
+            "endpoint",
+            subject="mathematics",
+            requested_content_type="KNOWLEDGE",
+        )
+        is None
+    )
 
 
 def test_related_results_disabled(monkeypatch):
@@ -374,9 +390,11 @@ def test_related_results_not_added_when_verified_results_exist(monkeypatch):
 
     monkeypatch.setenv("EDUCATION_QUERY_NORMALIZATION_ENABLED", "false")
     monkeypatch.setattr(verifier, "retrieve", lambda *args, **kwargs: [MATH_DOC])
-    monkeypatch.setattr(verifier, "verify_one", lambda *args, **kwargs: (
-        {"search_id": "math-1", "content_type": "EXERCISE"}, "accepted"
-    ))
+    monkeypatch.setattr(
+        verifier,
+        "verify_one",
+        lambda *args, **kwargs: ({"search_id": "math-1", "content_type": "EXERCISE"}, "accepted"),
+    )
     response = verifier.verified_search(object(), "Find triangle exercises", subject="mathematics")
     assert response["related_results"] == []
     assert response["match_status"] == "matches"

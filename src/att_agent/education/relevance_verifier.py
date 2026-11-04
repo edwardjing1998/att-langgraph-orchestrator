@@ -306,8 +306,8 @@ def assess_related_resource(
     subject constraints still apply. An invalid response fails closed.
     """
     if (
-            requested_content_type in {"KNOWLEDGE", "EXERCISE", "EXAMPLE"}
-            and str(doc.get("content_type") or "").upper() != requested_content_type
+        requested_content_type in {"KNOWLEDGE", "EXERCISE", "EXAMPLE"}
+        and str(doc.get("content_type") or "").upper() != requested_content_type
     ):
         return None
     if subject and normalize_text(str(doc.get("subject") or "")) != normalize_text(subject):
@@ -509,7 +509,10 @@ def verified_search(
 
     related = []
     if not accepted and os.getenv("EDUCATION_RELATED_RESULTS_ENABLED", "true").lower() in (
-        "1", "true", "yes", "on"
+        "1",
+        "true",
+        "yes",
+        "on",
     ):
         # Suggestions must honor the original content-type and subject filters.
         # The ANN results are only candidates: the model checks relatedness.
@@ -534,7 +537,8 @@ def verified_search(
         "related_results": related,
         "match_status": "matches" if accepted else ("related_results" if related else "no_results"),
         "message": (
-            "" if accepted
+            ""
+            if accepted
             else "No verified matches were found. You can select a related resource below."
             if related
             else "No suitable resources were found. Try a more specific question."
