@@ -47,12 +47,16 @@ def explicit_content_type(question: str) -> str:
 
 def is_category_browse(question: str, content_type: str) -> bool:
     """Identify requests for a category, with no separate learning topic."""
-    if content_type not in {"KNOWLEDGE", "EXERCISE", "EXAMPLE"}:
+    if content_type not in {"KNOWLEDGE", "EXERCISE", "EXAMPLE", "ANY"}:
+        return False
+    # ANY is a valid category-browse intent for a lesson (learning unit),
+    # not a request to browse every item on any unrelated topic.
+    if content_type == "ANY" and not re.search(r"\blessons?\b", normalize_text(question)):
         return False
     text = normalize_text(question)
     text = re.sub(
         r"\b(can you|could you|would you|please|show me|find|list|display|give me|"
-        r"i want|in the system|all|the|pages?|records?|resources?|materials?|"
+        r"i want|in the system|all|the|pages?|lessons?|records?|resources?|materials?|"
         r"content|related to|about|of|for|any|are there|do you have)\b",
         " ",
         text,
@@ -90,7 +94,7 @@ def browse_by_content_type(
         table,
     ):
         raise ValueError("Invalid approved source table identifier")
-    if content_type not in {"KNOWLEDGE", "EXERCISE", "EXAMPLE"}:
+    if content_type not in {"KNOWLEDGE", "EXERCISE", "EXAMPLE", "ANY"}:
         raise ValueError("Invalid content type")
     if not 1 <= limit <= 30:
         raise ValueError("Invalid browse limit")
@@ -98,10 +102,14 @@ def browse_by_content_type(
     # The table identifier is strictly validated, and user values are bound.
     statement = (
         "SELECT search_id, subject, content_type, title, "
-        "searchable_text, image_links_json "
-        f"FROM {table} WHERE content_type = :kind "
-        "AND (:subject = '' OR subject = :subject) "
-        "ORDER BY title, search_id LIMIT :max_results"
+        "searchable_text, image_links_json FROM ("
+        "SELECT search_id, subject, content_type, title, "
+        "searchable_text, image_links_json, "
+        "ROW_NUMBER() OVER (PARTITION BY content_type ORDER BY title, search_id) AS type_rank "
+        f"FROM {table} WHERE content_type IN ('KNOWLEDGE', 'EXAMPLE', 'EXERCISE') "
+        "AND (:kind = 'ANY' OR content_type = :kind) "
+        "AND (:subject = '' OR subject = :subject)"
+        ") ranked ORDER BY type_rank, content_type, title, search_id LIMIT :max_results"
     )
     response = ws.api_client.do(
         method="POST",
@@ -441,38 +449,53 @@ def verified_search(
         "yes",
         "on",
     )
+    # Canonicalize singular/plural references to the learning unit before
+    # LLM routing so equivalent phrasing uses an equivalent retrieval plan.
+    canonical_question = question
+    if re.search(r"\blessons?\b", normalize_text(question)):
+        canonical_question = re.sub(r"\blessons\b", "lesson", canonical_question, flags=re.I)
+        canonical_question = re.sub(r"\bexercises\b", "exercise", canonical_question, flags=re.I)
     understood = (
-        understand_question(ws, question, subject, chat_endpoint) if use_normalization else None
+        understand_question(ws, canonical_question, subject, chat_endpoint)
+        if use_normalization
+        else None
     )
     normalized_query = understood.normalized_query if understood else question
     effective_subject = understood.subject if understood else subject
-    # The model may over-specify KNOWLEDGE for a broad "show me pages" request.
-    # Only the user's explicit words may narrow the content-type constraint.
-    requested_type = explicit_content_type(question)
-    # Category-only resource requests are listings, not similarity questions.
-    # Keep answer_question mode evidence-grounded with the original verifier.
+    # "Lesson" describes a learning unit, not one of the three content categories.
+    # A broad lesson search includes KNOWLEDGE, EXAMPLE and EXERCISE. This
+    # canonicalization deliberately treats singular/plural in the same way.
+    format_is_lesson = bool(re.search(r"\blessons?\b", normalize_text(question))) or (
+        understood is not None and understood.resource_format == "lesson"
+    )
+    explicit_type = explicit_content_type(question)
+    # A user can still explicitly limit lesson results to a single category.
+    # Use a narrow constraint only when they expressly say "only" or "just".
+    only_category = bool(re.search(r"\b(only|just|exclusively)\b", normalize_text(question)))
+    requested_type = "ANY" if format_is_lesson and not only_category else explicit_type
+    category_as_topic = bool(
+        understood is not None
+        and normalize_text(understood.topic).rstrip("s") in {"exercise", "example", "knowledge"}
+    )
     inferred_browse = (
         understood is not None
-        and understood.search_mode == "browse"
-        and not understood.topic.strip()
+        and (understood.search_mode == "browse" or (format_is_lesson and category_as_topic))
+        and (not understood.topic.strip() or category_as_topic)
     )
-    browse_requested = (
-        search_intent in ("auto", "find_resources")
-        and requested_type in {"KNOWLEDGE", "EXERCISE", "EXAMPLE"}
-        and (inferred_browse or is_category_browse(question, requested_type))
+    # The model determines whether there is an actual mathematical topic.
+    # A pluralization difference must not change the requested content types.
+    browse_requested = search_intent in ("auto", "find_resources") and (
+        inferred_browse or is_category_browse(question, requested_type)
     )
-    # A lesson is a requested presentation format, not an approved-search content
-    # category. We cannot claim that EXERCISE records are lesson records.
-    format_is_lesson = understood is not None and understood.resource_format == "lesson"
+    # Never turn a question asking for an explanation into a catalog browse.
+    if search_intent == "answer_question":
+        browse_requested = False
     can_browse_sql = bool(
         os.getenv("EDUCATION_APPROVED_SOURCE_TABLE") and os.getenv("EDUCATION_SQL_WAREHOUSE_ID")
     )
     if browse_requested and can_browse_sql:
         rows = browse_by_content_type(ws, effective_subject, requested_type, top_k)
         records = [format_browse_result(row) for row in rows]
-        related_records = browse_suggestions(rows, "lesson") if format_is_lesson else []
-        if format_is_lesson:
-            records = []
         return {
             "question": question,
             "subject": subject or None,
@@ -481,25 +504,73 @@ def verified_search(
             "normalized_query": normalized_query,
             "results": records,
             "rejected_count": 0,
-            "related_results": related_records,
-            "match_status": (
-                "matches" if records else "related_results" if related_records else "no_results"
-            ),
-            "message": (
-                "Related exercise/category records are available, but are not verified lessons."
-                if related_records
-                else ""
-                if records
-                else "No matching resources were found."
-            ),
+            "related_results": [],
+            "match_status": "matches" if records else "no_results",
+            "message": "" if records else "No matching learning materials were found.",
         }
-    # An AI-identified category browse should search the category itself, not
-    # vectorize a potentially misleading phrase such as 'lessons related to'.
-    retrieval_query = requested_type.lower() if browse_requested else normalized_query
+    # When a warehouse is not configured, use the existing vector index.
+    # A topic-less broad lesson search queries all three indexed categories.
+    retrieval_query = (
+        requested_type.lower() if browse_requested and requested_type != "ANY" else normalized_query
+    )
 
     # More candidates than the requested output count enables verification to reject noise.
     multiplier = max(1, int(os.getenv("EDUCATION_CANDIDATE_MULTIPLIER", "3")))
     limit = min(100, max(top_k, top_k * multiplier))
+    if browse_requested and requested_type == "ANY" and format_is_lesson:
+        # Fetch across all categories to avoid ANN top-k dominance by one type.
+        # All results retain their true content_type and are discovery matches,
+        # not claims that the records are formally modeled "lesson" entities.
+        by_category = []
+        for category in ("KNOWLEDGE", "EXAMPLE", "EXERCISE"):
+            category_candidates = retrieve(
+                ws,
+                category.lower(),
+                min(30, max(1, top_k)),
+                index=index,
+                subject=effective_subject,
+                content_type=category,
+            )
+            by_category.append(category_candidates)
+        # Interleave categories so a top_k of 10 does not hide all exercises.
+        candidates = []
+        for offset in range(max(map(len, by_category), default=0)):
+            for category_documents in by_category:
+                if offset < len(category_documents):
+                    candidates.append(category_documents[offset])
+        seen = set()
+        catalog = []
+        for doc in candidates:
+            doc_id = str(doc.get("search_id") or "")
+            if not doc_id or doc_id in seen:
+                continue
+            if effective_subject and normalize_text(
+                str(doc.get("subject") or "")
+            ) != normalize_text(effective_subject):
+                continue
+            if str(doc.get("content_type") or "").upper() not in {
+                "KNOWLEDGE",
+                "EXAMPLE",
+                "EXERCISE",
+            }:
+                continue
+            seen.add(doc_id)
+            catalog.append(format_browse_result(doc))
+            if len(catalog) >= top_k:
+                break
+        return {
+            "question": question,
+            "subject": subject or None,
+            "search_intent": search_intent,
+            "candidate_count": len(candidates),
+            "normalized_query": normalized_query,
+            "results": catalog,
+            "rejected_count": 0,
+            "related_results": [],
+            "match_status": "matches" if catalog else "no_results",
+            "message": "" if catalog else "No matching learning materials were found.",
+        }
+
     candidates = retrieve(
         ws,
         retrieval_query,
@@ -538,13 +609,7 @@ def verified_search(
             else:
                 rejections.append({"search_id": doc_id, "reason": reason})
 
-    if browse_requested and format_is_lesson:
-        # Browse-like retrieval is not verified as a lesson; offer these as
-        # explicitly labeled related records, never as verified lesson matches.
-        retrieved_documents.extend(candidates)
-        seen_ids.update(str(doc.get("search_id")) for doc in candidates)
-    else:
-        evaluate(candidates)
+    evaluate(candidates)
 
     # A normalized query can lower recall compared with the original wording.
     # If no record passed, try the original query with the SAME user-requested

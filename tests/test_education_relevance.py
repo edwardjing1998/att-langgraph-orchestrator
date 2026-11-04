@@ -258,6 +258,9 @@ def test_category_browse_detection():
     assert not is_category_browse("show me knowledge about triangles", "KNOWLEDGE")
     assert not is_category_browse("show me rectangle exercises", "EXERCISE")
     assert not is_category_browse("show me rectangle pages", "ANY")
+    assert is_category_browse("show me all the lessons related to exercise", "ANY")
+    assert is_category_browse("show me all the lesson related to exercise", "ANY")
+    assert not is_category_browse("show me lessons about rectangle area", "ANY")
 
 
 def test_knowledge_browse_skips_vector_search_and_model(monkeypatch):
@@ -323,7 +326,7 @@ def test_browse_sql_uses_metadata_and_parameters(monkeypatch):
     api = API()
     result = browse_by_content_type(SimpleNamespace(api_client=api), "mathematics", "KNOWLEDGE", 5)
     assert result == [{"search_id": "tri-1", "content_type": "KNOWLEDGE"}]
-    assert "content_type = :kind" in api.body["statement"]
+    assert "(:kind = 'ANY' OR content_type = :kind)" in api.body["statement"]
     assert any(p["value"] == "KNOWLEDGE" for p in api.body["parameters"])
 
 
@@ -337,7 +340,7 @@ def test_related_results_when_strict_verification_rejects(monkeypatch):
     ws = fake_workspace({"related": True, "reason": "An exercise in the requested category"})
     response = verifier.verified_search(
         ws,
-        "Show me lessons related to exercise?",
+        "Show me exercises about triangles?",
         subject="mathematics",
         search_intent="find_resources",
     )
@@ -422,7 +425,7 @@ def test_related_suggestions_deduplicates_and_limits(monkeypatch):
     assert checked == ["a", "b"]
 
 
-def test_ai_browse_lessons_offer_exercise_records_without_mislabeling(monkeypatch):
+def test_broad_lesson_browse_includes_three_categories(monkeypatch):
     from att_agent.education import relevance_verifier as verifier
     from att_agent.education.question_understanding import UnderstoodQuestion
 
@@ -433,34 +436,43 @@ def test_ai_browse_lessons_offer_exercise_records_without_mislabeling(monkeypatc
         verifier,
         "understand_question",
         lambda *args: UnderstoodQuestion(
-            normalized_query="exercise resources",
+            normalized_query="learning resources",
             subject="mathematics",
-            content_type="EXERCISE",
+            content_type="EXERCISE",  # Model may over-narrow this field.
             topic="",
             search_mode="browse",
             resource_format="lesson",
         ),
     )
-    monkeypatch.setattr(
-        verifier,
-        "browse_by_content_type",
-        lambda *_args: [MATH_DOC, dict(MATH_DOC, search_id="math-2")],
-    )
+    observed = []
+
+    def browse(_ws, _subject, kind, _limit):
+        observed.append(kind)
+        return [
+            dict(MATH_DOC, search_id="k", content_type="KNOWLEDGE"),
+            dict(MATH_DOC, search_id="e", content_type="EXAMPLE"),
+            dict(MATH_DOC, search_id="x", content_type="EXERCISE"),
+        ]
+
+    monkeypatch.setattr(verifier, "browse_by_content_type", browse)
     monkeypatch.setattr(
         verifier,
         "retrieve",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("ANN should not run")),
     )
-    response = verifier.verified_search(
-        object(),
-        "Can you show me lessons related to exercises?",
-        subject="mathematics",
-    )
-    assert response["results"] == []
-    assert response["match_status"] == "related_results"
-    assert [item["search_id"] for item in response["related_results"]] == ["math-1", "math-2"]
-    assert all(item["content_type"] == "EXERCISE" for item in response["related_results"])
-    assert all(item["match_type"] == "RELATED_RESOURCE" for item in response["related_results"])
+    for wording in (
+        "Can you show me all the lesson related to exercise?",
+        "Can you show me all the lessons related to exercise?",
+    ):
+        response = verifier.verified_search(object(), wording, subject="mathematics")
+        assert {item["content_type"] for item in response["results"]} == {
+            "KNOWLEDGE",
+            "EXAMPLE",
+            "EXERCISE",
+        }
+        assert response["related_results"] == []
+        assert response["match_status"] == "matches"
+    assert observed == ["ANY", "ANY"]
 
 
 def test_ai_browse_pages_still_returns_direct_category_results(monkeypatch):
@@ -486,13 +498,12 @@ def test_ai_browse_pages_still_returns_direct_category_results(monkeypatch):
     assert response["related_results"] == []
 
 
-def test_ai_browse_without_warehouse_uses_category_vector_search(monkeypatch):
+def test_lesson_browse_without_warehouse_queries_all_categories(monkeypatch):
     from att_agent.education import relevance_verifier as verifier
     from att_agent.education.question_understanding import UnderstoodQuestion
 
     monkeypatch.delenv("EDUCATION_APPROVED_SOURCE_TABLE", raising=False)
     monkeypatch.delenv("EDUCATION_SQL_WAREHOUSE_ID", raising=False)
-    monkeypatch.setenv("EDUCATION_RELATED_RESULTS_ENABLED", "true")
     monkeypatch.setattr(
         verifier,
         "understand_question",
@@ -508,16 +519,23 @@ def test_ai_browse_without_warehouse_uses_category_vector_search(monkeypatch):
 
     def retrieve_stub(_ws, question, *_args, **kwargs):
         observed.append((question, kwargs["content_type"], kwargs["subject"]))
-        return [MATH_DOC]
+        kind = kwargs["content_type"]
+        return [dict(MATH_DOC, search_id=kind, content_type=kind)]
 
     monkeypatch.setattr(verifier, "retrieve", retrieve_stub)
-    ws = fake_workspace({"related": True, "reason": "Exercises are related resources"})
     response = verifier.verified_search(
-        ws, "Can you show me lessons related to exercises?", "mathematics"
+        object(), "Can you show me lessons related to exercises?", "mathematics"
     )
-    assert observed == [("exercise", "EXERCISE", "mathematics")]
-    assert response["match_status"] == "related_results"
-    assert response["related_results"][0]["content_type"] == "EXERCISE"
+    assert observed == [
+        ("knowledge", "KNOWLEDGE", "mathematics"),
+        ("example", "EXAMPLE", "mathematics"),
+        ("exercise", "EXERCISE", "mathematics"),
+    ]
+    assert {row["content_type"] for row in response["results"]} == {
+        "KNOWLEDGE",
+        "EXAMPLE",
+        "EXERCISE",
+    }
 
 
 def test_related_search_broadens_candidate_generation_when_empty(monkeypatch):
@@ -534,7 +552,37 @@ def test_related_search_broadens_candidate_generation_when_empty(monkeypatch):
     monkeypatch.setattr(verifier, "retrieve", retrieve_stub)
     ws = fake_workspace({"related": True, "reason": "An exercise resource"})
     response = verifier.verified_search(
-        ws, "Can you show me lessons related to exercises?", "mathematics"
+        ws, "Can you show me exercises related to triangles?", "mathematics"
     )
-    assert observed == ["Can you show me lessons related to exercises?", "exercise"]
+    assert observed == ["Can you show me exercises related to triangles?", "exercise"]
     assert response["related_results"][0]["search_id"] == "math-1"
+
+
+def test_only_exercise_lessons_preserves_explicit_content_filter(monkeypatch):
+    from att_agent.education import relevance_verifier as verifier
+    from att_agent.education.question_understanding import UnderstoodQuestion
+
+    monkeypatch.setenv("EDUCATION_APPROVED_SOURCE_TABLE", "education_rag.gold.approved_source")
+    monkeypatch.setenv("EDUCATION_SQL_WAREHOUSE_ID", "test-warehouse")
+    monkeypatch.setattr(
+        verifier,
+        "understand_question",
+        lambda *args: UnderstoodQuestion(
+            "only exercise lessons",
+            "mathematics",
+            search_mode="browse",
+            resource_format="lesson",
+        ),
+    )
+    kinds = []
+
+    def browse(_ws, _subject, content_type, _limit):
+        kinds.append(content_type)
+        return [MATH_DOC]
+
+    monkeypatch.setattr(verifier, "browse_by_content_type", browse)
+    response = verifier.verified_search(
+        object(), "Show me only exercise lessons", subject="mathematics"
+    )
+    assert kinds == ["EXERCISE"]
+    assert response["results"][0]["content_type"] == "EXERCISE"
