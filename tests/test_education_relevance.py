@@ -322,3 +322,78 @@ def test_browse_sql_uses_metadata_and_parameters(monkeypatch):
     assert result == [{"search_id": "tri-1", "content_type": "KNOWLEDGE"}]
     assert "content_type = :kind" in api.body["statement"]
     assert any(p["value"] == "KNOWLEDGE" for p in api.body["parameters"])
+
+
+def test_related_results_when_strict_verification_rejects(monkeypatch):
+    from att_agent.education import relevance_verifier as verifier
+
+    monkeypatch.setenv("EDUCATION_QUERY_NORMALIZATION_ENABLED", "false")
+    monkeypatch.setenv("EDUCATION_RELATED_RESULTS_ENABLED", "true")
+    monkeypatch.setattr(verifier, "retrieve", lambda *args, **kwargs: [MATH_DOC])
+    monkeypatch.setattr(verifier, "verify_one", lambda *args, **kwargs: (None, "no answer"))
+    ws = fake_workspace({"related": True, "reason": "An exercise in the requested category"})
+    response = verifier.verified_search(
+        ws, "Show me lessons related to exercise?", subject="mathematics",
+        search_intent="find_resources",
+    )
+    assert response["results"] == []
+    assert response["match_status"] == "related_results"
+    assert response["related_results"][0]["search_id"] == "math-1"
+    assert response["related_results"][0]["content_type"] == "EXERCISE"
+    assert response["related_results"][0]["answer_supported"] is False
+
+
+def test_related_results_reject_wrong_subject_and_content_type():
+    from att_agent.education.relevance_verifier import assess_related_resource
+
+    ws = fake_workspace({"related": True, "reason": "maybe related"})
+    assert assess_related_resource(
+        ws, "Find exercises", BIBLE_DOC, "endpoint",
+        subject="mathematics", requested_content_type="EXERCISE",
+    ) is None
+    assert assess_related_resource(
+        ws, "Find exercises", MATH_DOC, "endpoint",
+        subject="mathematics", requested_content_type="KNOWLEDGE",
+    ) is None
+
+
+def test_related_results_disabled(monkeypatch):
+    from att_agent.education import relevance_verifier as verifier
+
+    monkeypatch.setenv("EDUCATION_QUERY_NORMALIZATION_ENABLED", "false")
+    monkeypatch.setenv("EDUCATION_RELATED_RESULTS_ENABLED", "false")
+    monkeypatch.setattr(verifier, "retrieve", lambda *args, **kwargs: [MATH_DOC])
+    monkeypatch.setattr(verifier, "verify_one", lambda *args, **kwargs: (None, "not accepted"))
+    response = verifier.verified_search(object(), "Find triangle exercises", subject="mathematics")
+    assert response["related_results"] == []
+    assert response["match_status"] == "no_results"
+
+
+def test_related_results_not_added_when_verified_results_exist(monkeypatch):
+    from att_agent.education import relevance_verifier as verifier
+
+    monkeypatch.setenv("EDUCATION_QUERY_NORMALIZATION_ENABLED", "false")
+    monkeypatch.setattr(verifier, "retrieve", lambda *args, **kwargs: [MATH_DOC])
+    monkeypatch.setattr(verifier, "verify_one", lambda *args, **kwargs: (
+        {"search_id": "math-1", "content_type": "EXERCISE"}, "accepted"
+    ))
+    response = verifier.verified_search(object(), "Find triangle exercises", subject="mathematics")
+    assert response["related_results"] == []
+    assert response["match_status"] == "matches"
+
+
+def test_related_suggestions_deduplicates_and_limits(monkeypatch):
+    from att_agent.education import relevance_verifier as verifier
+
+    monkeypatch.setenv("EDUCATION_RELATED_MAX_CHECKS", "2")
+    checked = []
+
+    def stub(_ws, question, doc, endpoint, subject="", requested_content_type="ANY"):
+        checked.append(doc["search_id"])
+        return {"search_id": doc["search_id"]}
+
+    monkeypatch.setattr(verifier, "assess_related_resource", stub)
+    documents = [dict(MATH_DOC, search_id=i) for i in ("a", "a", "b", "c")]
+    result = verifier.related_suggestions(object(), "question", documents, "endpoint", "", "ANY", 10)
+    assert [item["search_id"] for item in result] == ["a", "b"]
+    assert checked == ["a", "b"]
