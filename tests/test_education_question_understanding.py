@@ -49,3 +49,23 @@ def test_rejects_invented_grade():
         )
     )
     assert understand_question(ws, "triangles", "", "model").normalized_query == "triangles"
+
+
+def test_model_distinguishes_category_browse_from_resource_format():
+    ws = client(
+        json.dumps(
+            {
+                "normalized_query": "exercise resources",
+                "subject": "mathematics",
+                "content_type": "EXERCISE",
+                "grade": None,
+                "topic": "",
+                "search_mode": "browse",
+                "resource_format": "lesson",
+            }
+        )
+    )
+    result = understand_question(ws, "Show me lessons related to exercises", "mathematics", "model")
+    assert result.search_mode == "browse"
+    assert result.resource_format == "lesson"
+    assert result.content_type == "EXERCISE"

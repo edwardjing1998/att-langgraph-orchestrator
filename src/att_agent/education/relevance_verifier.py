@@ -405,6 +405,24 @@ def related_suggestions(
     return related
 
 
+def browse_suggestions(rows: list[dict], requested_format: str) -> list[dict]:
+    """Label records as related when the requested format is not represented.
+
+    The approved search schema stores content categories, not a lesson/page
+    entity type. A requested lesson cannot be asserted from that schema.
+    """
+    suggestions = []
+    for doc in rows:
+        item = format_browse_result(doc)
+        item["match_type"] = "RELATED_RESOURCE"
+        item["reason"] = (
+            f"Related {str(doc.get('content_type') or 'resource').lower()} record; "
+            f"not verified as a {requested_format}"
+        )
+        suggestions.append(item)
+    return suggestions
+
+
 def verified_search(
     ws: WorkspaceClient,
     question: str,
@@ -433,28 +451,58 @@ def verified_search(
     requested_type = explicit_content_type(question)
     # Category-only resource requests are listings, not similarity questions.
     # Keep answer_question mode evidence-grounded with the original verifier.
-    if search_intent in ("auto", "find_resources") and is_category_browse(question, requested_type):
+    inferred_browse = (
+        understood is not None
+        and understood.search_mode == "browse"
+        and not understood.topic.strip()
+    )
+    browse_requested = (
+        search_intent in ("auto", "find_resources")
+        and requested_type in {"KNOWLEDGE", "EXERCISE", "EXAMPLE"}
+        and (inferred_browse or is_category_browse(question, requested_type))
+    )
+    # A lesson is a requested presentation format, not an approved-search content
+    # category. We cannot claim that EXERCISE records are lesson records.
+    format_is_lesson = understood is not None and understood.resource_format == "lesson"
+    can_browse_sql = bool(
+        os.getenv("EDUCATION_APPROVED_SOURCE_TABLE") and os.getenv("EDUCATION_SQL_WAREHOUSE_ID")
+    )
+    if browse_requested and can_browse_sql:
         rows = browse_by_content_type(ws, effective_subject, requested_type, top_k)
         records = [format_browse_result(row) for row in rows]
+        related_records = browse_suggestions(rows, "lesson") if format_is_lesson else []
+        if format_is_lesson:
+            records = []
         return {
             "question": question,
             "subject": subject or None,
             "search_intent": search_intent,
-            "candidate_count": len(records),
+            "candidate_count": len(rows),
             "normalized_query": normalized_query,
             "results": records,
             "rejected_count": 0,
-            "related_results": [],
-            "match_status": "matches" if records else "no_results",
-            "message": "" if records else "No matching resources were found.",
+            "related_results": related_records,
+            "match_status": (
+                "matches" if records else "related_results" if related_records else "no_results"
+            ),
+            "message": (
+                "Related exercise/category records are available, but are not verified lessons."
+                if related_records
+                else ""
+                if records
+                else "No matching resources were found."
+            ),
         }
+    # An AI-identified category browse should search the category itself, not
+    # vectorize a potentially misleading phrase such as 'lessons related to'.
+    retrieval_query = requested_type.lower() if browse_requested else normalized_query
 
     # More candidates than the requested output count enables verification to reject noise.
     multiplier = max(1, int(os.getenv("EDUCATION_CANDIDATE_MULTIPLIER", "3")))
     limit = min(100, max(top_k, top_k * multiplier))
     candidates = retrieve(
         ws,
-        normalized_query,
+        retrieval_query,
         limit,
         index=index,
         subject=effective_subject,
@@ -490,13 +538,23 @@ def verified_search(
             else:
                 rejections.append({"search_id": doc_id, "reason": reason})
 
-    evaluate(candidates)
+    if browse_requested and format_is_lesson:
+        # Browse-like retrieval is not verified as a lesson; offer these as
+        # explicitly labeled related records, never as verified lesson matches.
+        retrieved_documents.extend(candidates)
+        seen_ids.update(str(doc.get("search_id")) for doc in candidates)
+    else:
+        evaluate(candidates)
 
     # A normalized query can lower recall compared with the original wording.
     # If no record passed, try the original query with the SAME user-requested
     # content-type restriction. In particular, "rectangle" resources should
     # not disappear merely because the model rewrote the question badly.
-    if not accepted and normalized_query.strip().casefold() != question.strip().casefold():
+    if (
+        not accepted
+        and not browse_requested
+        and normalized_query.strip().casefold() != question.strip().casefold()
+    ):
         original_candidates = retrieve(
             ws,
             question,
@@ -514,6 +572,19 @@ def verified_search(
         "yes",
         "on",
     ):
+        # A strict search might have retrieved no useful candidates at all.
+        # Widen candidate generation separately, while retaining subject and
+        # category filters. This is not a new verified-answer search.
+        if not retrieved_documents and requested_type != "ANY":
+            broad_candidates = retrieve(
+                ws,
+                requested_type.lower(),
+                limit,
+                index=index,
+                subject=effective_subject,
+                content_type=requested_type,
+            )
+            retrieved_documents.extend(broad_candidates)
         # Suggestions must honor the original content-type and subject filters.
         # The ANN results are only candidates: the model checks relatedness.
         related = related_suggestions(

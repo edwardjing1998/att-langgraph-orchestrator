@@ -209,6 +209,7 @@ def test_general_pages_query_does_not_filter_to_knowledge(monkeypatch):
 def test_explicit_exercises_stay_filtered(monkeypatch):
     from att_agent.education import relevance_verifier as verifier
 
+    monkeypatch.setenv("EDUCATION_RELATED_RESULTS_ENABLED", "false")
     seen = []
 
     def retrieve_stub(*args, **kwargs):
@@ -262,6 +263,8 @@ def test_category_browse_detection():
 def test_knowledge_browse_skips_vector_search_and_model(monkeypatch):
     from att_agent.education import relevance_verifier as verifier
 
+    monkeypatch.setenv("EDUCATION_APPROVED_SOURCE_TABLE", "education_rag.gold.approved_source")
+    monkeypatch.setenv("EDUCATION_SQL_WAREHOUSE_ID", "test-warehouse")
     monkeypatch.setenv("EDUCATION_QUERY_NORMALIZATION_ENABLED", "false")
     monkeypatch.setattr(
         verifier,
@@ -413,13 +416,125 @@ def test_related_suggestions_deduplicates_and_limits(monkeypatch):
     monkeypatch.setattr(verifier, "assess_related_resource", stub)
     documents = [dict(MATH_DOC, search_id=i) for i in ("a", "a", "b", "c")]
     result = verifier.related_suggestions(
-        object(),
-        "question",
-        documents,
-        "endpoint",
-        "",
-        "ANY",
-        10,
+        object(), "question", documents, "endpoint", "", "ANY", 10
     )
     assert [item["search_id"] for item in result] == ["a", "b"]
     assert checked == ["a", "b"]
+
+
+def test_ai_browse_lessons_offer_exercise_records_without_mislabeling(monkeypatch):
+    from att_agent.education import relevance_verifier as verifier
+    from att_agent.education.question_understanding import UnderstoodQuestion
+
+    monkeypatch.setenv("EDUCATION_QUERY_NORMALIZATION_ENABLED", "true")
+    monkeypatch.setenv("EDUCATION_APPROVED_SOURCE_TABLE", "education_rag.gold.approved_source")
+    monkeypatch.setenv("EDUCATION_SQL_WAREHOUSE_ID", "test-warehouse")
+    monkeypatch.setattr(
+        verifier,
+        "understand_question",
+        lambda *args: UnderstoodQuestion(
+            normalized_query="exercise resources",
+            subject="mathematics",
+            content_type="EXERCISE",
+            topic="",
+            search_mode="browse",
+            resource_format="lesson",
+        ),
+    )
+    monkeypatch.setattr(
+        verifier,
+        "browse_by_content_type",
+        lambda *_args: [MATH_DOC, dict(MATH_DOC, search_id="math-2")],
+    )
+    monkeypatch.setattr(
+        verifier,
+        "retrieve",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("ANN should not run")),
+    )
+    response = verifier.verified_search(
+        object(),
+        "Can you show me lessons related to exercises?",
+        subject="mathematics",
+    )
+    assert response["results"] == []
+    assert response["match_status"] == "related_results"
+    assert [item["search_id"] for item in response["related_results"]] == ["math-1", "math-2"]
+    assert all(item["content_type"] == "EXERCISE" for item in response["related_results"])
+    assert all(item["match_type"] == "RELATED_RESOURCE" for item in response["related_results"])
+
+
+def test_ai_browse_pages_still_returns_direct_category_results(monkeypatch):
+    from att_agent.education import relevance_verifier as verifier
+    from att_agent.education.question_understanding import UnderstoodQuestion
+
+    monkeypatch.setenv("EDUCATION_APPROVED_SOURCE_TABLE", "education_rag.gold.approved_source")
+    monkeypatch.setenv("EDUCATION_SQL_WAREHOUSE_ID", "test-warehouse")
+    monkeypatch.setattr(
+        verifier,
+        "understand_question",
+        lambda *args: UnderstoodQuestion(
+            "exercise pages",
+            "mathematics",
+            "EXERCISE",
+            search_mode="browse",
+            resource_format="page",
+        ),
+    )
+    monkeypatch.setattr(verifier, "browse_by_content_type", lambda *_args: [MATH_DOC])
+    response = verifier.verified_search(object(), "Show pages related to exercises", "mathematics")
+    assert [item["search_id"] for item in response["results"]] == ["math-1"]
+    assert response["related_results"] == []
+
+
+def test_ai_browse_without_warehouse_uses_category_vector_search(monkeypatch):
+    from att_agent.education import relevance_verifier as verifier
+    from att_agent.education.question_understanding import UnderstoodQuestion
+
+    monkeypatch.delenv("EDUCATION_APPROVED_SOURCE_TABLE", raising=False)
+    monkeypatch.delenv("EDUCATION_SQL_WAREHOUSE_ID", raising=False)
+    monkeypatch.setenv("EDUCATION_RELATED_RESULTS_ENABLED", "true")
+    monkeypatch.setattr(
+        verifier,
+        "understand_question",
+        lambda *args: UnderstoodQuestion(
+            "lessons related to exercises",
+            "mathematics",
+            "EXERCISE",
+            search_mode="browse",
+            resource_format="lesson",
+        ),
+    )
+    observed = []
+
+    def retrieve_stub(_ws, question, *_args, **kwargs):
+        observed.append((question, kwargs["content_type"], kwargs["subject"]))
+        return [MATH_DOC]
+
+    monkeypatch.setattr(verifier, "retrieve", retrieve_stub)
+    ws = fake_workspace({"related": True, "reason": "Exercises are related resources"})
+    response = verifier.verified_search(
+        ws, "Can you show me lessons related to exercises?", "mathematics"
+    )
+    assert observed == [("exercise", "EXERCISE", "mathematics")]
+    assert response["match_status"] == "related_results"
+    assert response["related_results"][0]["content_type"] == "EXERCISE"
+
+
+def test_related_search_broadens_candidate_generation_when_empty(monkeypatch):
+    from att_agent.education import relevance_verifier as verifier
+
+    monkeypatch.setenv("EDUCATION_QUERY_NORMALIZATION_ENABLED", "false")
+    monkeypatch.setenv("EDUCATION_RELATED_RESULTS_ENABLED", "true")
+    observed = []
+
+    def retrieve_stub(_ws, question, *_args, **_kwargs):
+        observed.append(question)
+        return [MATH_DOC] if question == "exercise" else []
+
+    monkeypatch.setattr(verifier, "retrieve", retrieve_stub)
+    ws = fake_workspace({"related": True, "reason": "An exercise resource"})
+    response = verifier.verified_search(
+        ws, "Can you show me lessons related to exercises?", "mathematics"
+    )
+    assert observed == ["Can you show me lessons related to exercises?", "exercise"]
+    assert response["related_results"][0]["search_id"] == "math-1"
